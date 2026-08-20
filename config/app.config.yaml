@@ -1,0 +1,186 @@
+# MaintMode backend — non-secret configuration.
+#
+# Mounted read-only at /app/app.config.yaml. Values written as <secret:key> are
+# resolved from app.secrets.yaml at startup, so no credential ever appears in
+# this file and it is safe to commit alongside your own infrastructure.
+#
+# Sensible defaults for a self-hosted single-instance deployment. You can run
+# it unchanged; the sections worth revisiting are marked.
+#
+# NOTE: there is deliberately no `license:` block. The seat-based licence gate
+# activates only when BOTH a console URL and an instance token are set. Neither
+# is set here, so no heartbeat runs, no seat cap applies, and nothing leaves
+# your network. See README.md, "Licensing and telemetry".
+
+environment: prod
+
+app:
+  # Where the backend sends a browser back after the OAuth exchange. Must match
+  # MAINTMODE_APP_BASE_URL in .env — a mismatch redirects users into nowhere
+  # after an otherwise successful login.
+  frontend_url: http://localhost:3000
+
+auth:
+  # Invite-only. An unknown user with no invitation is rejected.
+  #
+  # The one exception is the very first login on an instance with zero admins:
+  # that user is made administrator regardless of this setting. Log in yourself
+  # before anyone else can reach the instance. See README.md, "First login".
+  #
+  # Setting this to true lets ANY Google account create an account on your
+  # instance. Only do that if you front it with something that already
+  # restricts who can reach it.
+  allow_open_signup: false
+
+jwtverifier:
+  # The backend both mints and verifies its own tokens; the JWKS endpoint it
+  # fetches from is its own, in-process. localhost is correct here — it means
+  # "this same container", not your machine.
+  jwt_issuer: oauth-service
+  jwks_url: http://localhost:8000/api/v1/.well-known/jwks.json
+  jwks_refresh_interval: 1h
+  jwks_http_timeout: 10s
+  jwt_leeway: 30s
+  jwks_unknown_kid_refresh_rate: 5m
+  jwks_unknown_kid_wait_max: 10s
+
+rbac:
+  # The role matrix ships inside the image at /app/authz (MAINTMODE_AUTHZ_DIR).
+  # Filenames are relative to that directory.
+  adapter: file
+  model: model.conf
+  policy: policy.csv
+
+logger:
+  # `debug` is useful while diagnosing a failed bring-up, but it logs request
+  # detail you probably do not want retained. Put it back to info afterwards.
+  level: info
+
+api_server:
+  name: api
+  host: 0.0.0.0
+  port: 8000
+  # Per-IP cap on the login surface. This is an anti-enumeration ceiling, not a
+  # business rule — legitimate users hit it only if something is looping.
+  rate_limiter:
+    requests_per_minute: 30
+    burst: 30
+    expires_in: 3m
+    timeout: 200ms
+  # Cap on the screen-data routes, keyed by user id rather than IP: a team
+  # behind one office NAT shares an address, and an IP key would let one
+  # person's runaway tab throttle their colleagues.
+  ui_rate_limiter:
+    requests_per_minute: 300
+    burst: 300
+    expires_in: 3m
+    timeout: 200ms
+  # Socket deadlines. These are connection hygiene (slowloris, half-open
+  # sockets), not per-request budgets. Omitting a key does not disable the
+  # deadline — it falls back to the same default.
+  timeouts:
+    read_header: 10s
+    read: 30s
+    write: 30s
+    idle: 75s
+
+infra_server:
+  # Health, readiness, and pprof. Never publish this port.
+  name: status
+  host: 0.0.0.0
+  port: 8001
+  # No write deadline on purpose: a CPU profile blocks for its whole sampling
+  # window before the body completes, and a fixed deadline would truncate it.
+  timeouts:
+    read_header: 10s
+    read: 30s
+    idle: 75s
+
+# On SIGTERM the process reports not-ready and keeps serving for this long
+# before closing its listener, so a proxy in front can drain it first.
+shutdown:
+  drain_timeout: 6s
+
+db:
+  dsn: <secret:db/dsn>
+  driver: postgres
+  # Postgres defaults to 100 connections; 50 leaves room for psql and backups.
+  max_open_conns: 50
+  max_idle_conns: 20
+  connection_max_lifetime: 10m
+  connection_max_idle_time: 5m
+
+valkey:
+  addr: valkey:6379
+  password: <secret:valkey/password>
+  db: 0
+
+oauth_providers:
+  google:
+    # Must be the same client ID the frontend uses. The frontend performs the
+    # code exchange with Google; the backend only verifies the resulting ID
+    # token offline, using this value as the expected audience. If the two
+    # differ, every login fails audience validation.
+    client_id: <secret:oauth/google/client_id>
+    jwtverifier:
+      jwks_url: https://www.googleapis.com/oauth2/v3/certs
+      jwt_issuers:
+        - "accounts.google.com"
+        - "https://accounts.google.com"
+      jwks_refresh_interval: 1h
+      jwks_http_timeout: 10s
+      jwt_leeway: 30s
+      jwks_unknown_kid_refresh_rate: 5m
+      jwks_unknown_kid_wait_max: 10s
+
+jwt:
+  issuer_name: oauth-service
+  issuer_private_key: <secret:jwt/issuer_private_key>
+  issuer_kid: <secret:jwt/issuer_kid>
+  access_token_ttl: 15m
+  refresh_token_ttl: 720h # 30 days
+  refresh_token_grace_period: 30s
+  refresh_token_distributed_lock_ttl: 5s
+
+notify_transport:
+  # Slack, Telegram, and SMTP credentials are NOT configured here. They live
+  # encrypted in the database and are set up from the admin UI after you log
+  # in, so adding a notification channel needs no redeploy.
+  use_stub: false
+
+task_processor:
+  messaging:
+    workers: 10
+    max_attempts: 5
+  # Cron fields are "minute hour day-of-month month day-of-week".
+  maint_auto_cancel:
+    cron_spec: "* * * * *"
+    threshold: 15m
+    batch_limit: 100
+  audit_prune:
+    # Daily at 03:00, container-local time. Audit rows older than the retention
+    # are deleted in batches — raise it if you have a compliance requirement.
+    cron_spec: "0 3 * * *"
+    retention: 8760h # 365 days
+    batch_limit: 1000
+  invitation_rotate:
+    cron_spec: "0 3 * * *"
+    batch_limit: 1000
+  invitation_prune:
+    cron_spec: "0 3 * * *"
+    retention: 8760h # 365 days
+    batch_limit: 1000
+
+# Master key wrapping the data keys that encrypt integration secrets (your
+# Slack token, SMTP password, ...) at rest in the database.
+#
+# LOSING THIS KEY MAKES EVERY STORED INTEGRATION SECRET UNREADABLE. Back it up
+# with your secrets file, not only with your database dump — a restored dump
+# without the matching key leaves your integrations configured but unusable.
+#
+# Retired keys must stay listed under local_keys so already-wrapped data keys
+# can still be unwrapped during a rotation.
+crypto:
+  active_kek_uri: local-kms://selfhost-1
+  local_keys:
+    "local-kms://selfhost-1": <secret:crypto/kek/selfhost-1>

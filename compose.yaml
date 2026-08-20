@@ -1,0 +1,165 @@
+# MaintMode — self-hosted Docker Compose stack.
+#
+# Five services: postgres, valkey, a one-shot migration job, the Go backend,
+# and the Next.js frontend. Everything a working instance needs, nothing else.
+#
+#   docker compose up -d
+#
+# Read README.md first — this file will not produce a usable instance without
+# a filled-in .env and the Google OAuth client it depends on.
+#
+# WHAT IS DELIBERATELY ABSENT
+#
+# The upstream development stack also runs a connection pooler, a Caddy
+# gateway, and a full monitoring stack (VictoriaMetrics, Grafana, Loki, Tempo,
+# Pyroscope). None of that is here:
+#
+#   - pg_doorman (pooler): the backend opens at most `max_open_conns` (50)
+#     connections and Postgres defaults to 100. A pooler solves a problem a
+#     single-instance deployment does not have, at the cost of one more moving
+#     part to operate and debug. The app talks to Postgres directly.
+#   - Caddy: it exists upstream to terminate TLS, load-balance across scaled
+#     backend replicas, and strip the /auth and /maintmode path prefixes. A
+#     single-replica install needs none of that, and putting your own reverse
+#     proxy in front (see README, "Behind a reverse proxy with TLS") is both
+#     more likely to match your existing setup and one less thing we own.
+#   - monitoring: valuable, but it roughly triples the RAM footprint and has
+#     nothing to do with getting MaintMode running.
+#
+# Because Caddy is gone, the frontend talks to the backend directly on port
+# 8000. Upstream, Caddy's `handle_path` STRIPS the prefix before proxying, so
+# http://caddy:3000/auth/api/v1/me and http://maintmode:8000/api/v1/me are the
+# same route. Both frontend base URLs therefore point at the same origin here.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: maintmode
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.example}
+      POSTGRES_DB: maintmode
+    volumes:
+      - db_data:/var/lib/postgresql
+    # No published port. Nothing outside this compose network needs to reach
+    # Postgres, and an exposed 5432 is the single most-scanned port on the
+    # internet. To connect a client, use `docker compose exec postgres psql`
+    # (see the backup section of the README) or add a 127.0.0.1-bound mapping.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maintmode -d maintmode"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  valkey:
+    image: valkey/valkey:9.1.1-alpine
+    restart: unless-stopped
+    # appendonly makes the AOF durable across restarts. MaintMode uses Valkey
+    # for rate-limit counters and short-lived distributed locks — losing them
+    # is survivable, but a cold cache after every restart is needless churn.
+    command: valkey-server --appendonly yes
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # One-shot schema migration. Runs to completion, then exits 0; the backend
+  # waits on that exit via `service_completed_successfully`, so the app never
+  # starts against a half-migrated schema.
+  #
+  # This image is NOT a generic goose runner — it carries MaintMode's migration
+  # files inside itself. Keep its tag in lockstep with the maintmode tag below:
+  # a backend newer than its schema fails in ways that are tedious to diagnose.
+  migrations:
+    image: ghcr.io/maintmode-dev/maintmode/migrations:${MAINTMODE_VERSION:-main}
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://maintmode:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/maintmode?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Not `unless-stopped`: this is a job, not a service. `on-failure` retries a
+    # migration that lost a race with a not-quite-ready Postgres, but a job that
+    # succeeded stays exited instead of looping forever.
+    restart: on-failure
+
+  # The Go backend. One binary serves both the auth routes and the application
+  # API: 8000 is the public API, 8001 is the infra port (health, readiness).
+  maintmode:
+    image: ghcr.io/maintmode-dev/maintmode/maintmode:${MAINTMODE_VERSION:-main}
+    restart: unless-stopped
+    environment:
+      MAINTMODE_CONFIG_DIR: /app
+      MAINTMODE_AUTHZ_DIR: /app/authz
+    volumes:
+      # Non-secret settings. Read-only: the app never writes them, and a
+      # read-only mount means a container compromise cannot rewrite its own
+      # config.
+      - ./config/app.config.yaml:/app/app.config.yaml:ro
+      # Secrets, resolved into the config above wherever it says <secret:...>.
+      # This file is gitignored and you create it yourself — see the README.
+      # The container runs as an unprivileged user, so both files must be
+      # world-readable on the host (chmod 644) or startup fails on a read error.
+      - ./config/app.secrets.yaml:/app/app.secrets.yaml:ro
+      # The RBAC model and policy ship inside the image at /app/authz. Mount
+      # your own only if you are deliberately customising the role matrix.
+    # No published ports. The frontend reaches the backend over the compose
+    # network; the browser only ever talks to the frontend. Publishing 8000
+    # would expose the API without the frontend's session handling in front.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      # /readiness on the infra port reports 200 only once the DB and Valkey
+      # are actually reachable, so this gates the frontend on a backend that
+      # can serve, not merely one whose process has started.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8001/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # The Next.js frontend, which is also the BFF: the browser never holds a
+  # backend token, and never talks to the backend directly.
+  ui:
+    image: ghcr.io/maintmode-dev/maintmode-ui/ui:${MAINTMODE_UI_VERSION:-main}
+    restart: unless-stopped
+    environment:
+      # Both point at the same origin: without Caddy stripping prefixes there
+      # is no /auth vs /maintmode split (see the header comment).
+      MAINTMODE_API_BASE_URL: http://maintmode:8000
+      MAINTMODE_AUTH_API_BASE_URL: http://maintmode:8000
+      MAINTMODE_API_TIMEOUT_MS: ${MAINTMODE_API_TIMEOUT_MS:-10000}
+      # These four are validated when the auth module loads — that is, before
+      # any route renders. Miss one and NOTHING serves, including /login. The
+      # `:?` guards turn that runtime crash into an upfront compose error that
+      # names the variable.
+      MAINTMODE_AUTH_SECRET: ${MAINTMODE_AUTH_SECRET:?MAINTMODE_AUTH_SECRET is required, min 32 chars — see .env.example}
+      MAINTMODE_APP_BASE_URL: ${MAINTMODE_APP_BASE_URL:?MAINTMODE_APP_BASE_URL is required — the public URL users type}
+      MAINTMODE_GOOGLE_OAUTH_CLIENT_ID: ${MAINTMODE_GOOGLE_OAUTH_CLIENT_ID:?MAINTMODE_GOOGLE_OAUTH_CLIENT_ID is required — see README, Google OAuth}
+      MAINTMODE_GOOGLE_OAUTH_CLIENT_SECRET: ${MAINTMODE_GOOGLE_OAUTH_CLIENT_SECRET:?MAINTMODE_GOOGLE_OAUTH_CLIENT_SECRET is required — see README, Google OAuth}
+    ports:
+      # Bound to 127.0.0.1 by default so a fresh `up` does not put an instance
+      # on the public internet before its first admin has logged in (see the
+      # README warning about bootstrap). Set MAINTMODE_BIND_ADDRESS=0.0.0.0 in
+      # .env once you have bootstrapped, or leave it and front the stack with a
+      # reverse proxy on the same host.
+      - "${MAINTMODE_BIND_ADDRESS:-127.0.0.1}:${MAINTMODE_HTTP_PORT:-3000}:3000"
+    depends_on:
+      maintmode:
+        condition: service_healthy
+
+volumes:
+  # Named volumes, not bind mounts: `docker compose down` (without -v) leaves
+  # them intact, and they are what the backup commands in the README operate on.
+  db_data:
+  valkey_data:

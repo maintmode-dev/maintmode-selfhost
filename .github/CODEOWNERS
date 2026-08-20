@@ -1,0 +1,6 @@
+# Every change needs a review from the maintainer.
+#
+# GitHub only enforces this if branch protection on the default branch has
+# "Require review from Code Owners" enabled — the file alone requests a review,
+# it does not block a merge.
+* @ruko1202
