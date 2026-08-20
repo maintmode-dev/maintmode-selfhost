@@ -76,7 +76,7 @@ services:
   # files inside itself. Keep its tag in lockstep with the maintmode tag below:
   # a backend newer than its schema fails in ways that are tedious to diagnose.
   migrations:
-    image: ghcr.io/maintmode-dev/maintmode/migrations:${MAINTMODE_VERSION:-main}
+    image: ghcr.io/maintmode-dev/maintmode-migrations:${MAINTMODE_VERSION:-main}
     environment:
       GOOSE_DRIVER: postgres
       GOOSE_DBSTRING: postgres://maintmode:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/maintmode?sslmode=disable
@@ -91,7 +91,7 @@ services:
   # The Go backend. One binary serves both the auth routes and the application
   # API: 8000 is the public API, 8001 is the infra port (health, readiness).
   maintmode:
-    image: ghcr.io/maintmode-dev/maintmode/maintmode:${MAINTMODE_VERSION:-main}
+    image: ghcr.io/maintmode-dev/maintmode:${MAINTMODE_VERSION:-main}
     restart: unless-stopped
     environment:
       MAINTMODE_CONFIG_DIR: /app
@@ -131,7 +131,7 @@ services:
   # The Next.js frontend, which is also the BFF: the browser never holds a
   # backend token, and never talks to the backend directly.
   ui:
-    image: ghcr.io/maintmode-dev/maintmode-ui/ui:${MAINTMODE_UI_VERSION:-main}
+    image: ghcr.io/maintmode-dev/maintmode-ui:${MAINTMODE_UI_VERSION:-main}
     restart: unless-stopped
     environment:
       # Both point at the same origin: without Caddy stripping prefixes there

@@ -36,9 +36,9 @@ Both are AGPL-3.0, as is this repository.
 references in `compose.yaml` are placeholders:
 
 ```
-ghcr.io/maintmode-dev/maintmode/maintmode:${MAINTMODE_VERSION}
-ghcr.io/maintmode-dev/maintmode-ui/ui:${MAINTMODE_UI_VERSION}
-ghcr.io/maintmode-dev/maintmode/migrations:${MAINTMODE_VERSION}
+ghcr.io/maintmode-dev/maintmode:${MAINTMODE_VERSION}
+ghcr.io/maintmode-dev/maintmode-ui:${MAINTMODE_UI_VERSION}
+ghcr.io/maintmode-dev/maintmode-migrations:${MAINTMODE_VERSION}
 ```
 
 The names match what the projects' CI builds, and the version comes from
