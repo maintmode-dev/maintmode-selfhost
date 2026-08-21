@@ -30,10 +30,7 @@ Both are AGPL-3.0, as is this repository.
 
 ---
 
-## ⚠️ The container images are not published yet
-
-**This repository is ready before the images it pulls are.** The image
-references in `compose.yaml` are placeholders:
+## Images
 
 ```
 ghcr.io/maintmode-dev/maintmode:${MAINTMODE_VERSION}
@@ -41,32 +38,16 @@ ghcr.io/maintmode-dev/maintmode-ui:${MAINTMODE_UI_VERSION}
 ghcr.io/maintmode-dev/maintmode-migrations:${MAINTMODE_VERSION}
 ```
 
-The names match what the projects' CI builds, and the version comes from
-`MAINTMODE_VERSION` / `MAINTMODE_UI_VERSION` in your `.env` (default `main`).
+Published to GHCR for `linux/amd64` and `linux/arm64`, so an Apple Silicon Mac
+runs them natively. They are public — no `docker login` needed.
 
-Until the first release is published, `docker compose up` will fail at the pull
-step with a 401 or "not found". That is expected and there is no workaround
-here — the images do not exist yet.
-
-Two further things will be settled by that first release:
-
-1. **Final image names and tags.** Pinning a real version instead of `latest`
-   is strongly recommended once tags exist; `latest` gives you no control over
-   when your instance changes underneath you.
-2. **The migrations image.** `compose.yaml` assumes a
-   `maintmode-migrations` image that carries the schema migration files inside
-   itself. The upstream development stack does it differently — it runs a
-   generic `goose` image against a `migrations/` directory bind-mounted from
-   the backend source tree. That directory is not in this repository, so a
-   self-contained image is the only form that works for a self-hoster who has
-   not cloned the backend. **If the first release ships migrations some other
-   way** (a subcommand on the backend binary, say, or migrations applied
-   automatically at startup) **the `migrations` service in `compose.yaml` will
-   need to be rewritten to match.**
-
-Everything else in this repository — the configuration contract, the
-environment variables, the OAuth setup, the bootstrap behaviour — is taken from
-the actual source and will not change with the release.
+The version comes from `MAINTMODE_VERSION` / `MAINTMODE_UI_VERSION` in your
+`.env`. CI tags every build three ways: by release tag (`v0.1.0`), by branch
+(`main`) and by commit (`sha-abc1234`). **Pin a release tag in production** —
+`main` moves whenever you happen to run `docker compose pull`, which is rarely
+what you want. Keep `maintmode` and `maintmode-migrations` on the same version:
+they ship as a pair, and the migrations image carries exactly the schema that
+backend build expects.
 
 ---
 
@@ -423,10 +404,11 @@ downtime.
 **Back up before updating.** See below. A schema migration is not reversible by
 `docker compose down`.
 
-**Pin your versions.** CI tags images by branch (`main`), by release tag
-(`v1.2.3`) and by commit (`sha-abc1234`) — there is no `latest`. Set
-`MAINTMODE_VERSION` to a release tag in production: `main` moves whenever you
-happen to run `pull`, which is rarely what you want. Keep the backend and
+**Pin your versions.** CI tags images by release tag (`v1.2.3`), by branch
+(`main`) and by commit (`sha-abc1234`), and points `latest` at the newest
+release. Set `MAINTMODE_VERSION` to a release tag in production: `main` and
+`latest` both move whenever you happen to run `pull`, which is rarely what you
+want. Keep the backend and
 migrations images on the same version — they ship as a pair, and the migrations
 image contains exactly the schema that backend build expects.
 
@@ -597,16 +579,20 @@ docker compose logs migrations
 The backend will not start until this job exits 0, so a stuck migration
 presents as a backend that never starts.
 
-### `401 Unauthorized` or `not found` pulling images
+### `denied`, `401 Unauthorized` or `not found` pulling images
 
-Expected right now — see
-[the notice at the top](#️-the-container-images-are-not-published-yet). The
-images are not published yet.
+The images are public, so this is almost always a stale credential rather than
+a permission you are missing. Docker sends whatever it has stored for the
+registry, and a token that no longer grants access to the package fails the
+pull that would have succeeded anonymously:
 
-Once they are, a 401 means either a genuinely private image or a stale
-credential. Try `docker logout ghcr.io` and pull again — anonymous pulls work
-for public images, and an expired stored token causes a 401 where no
-authentication was needed at all.
+```bash
+docker logout ghcr.io
+docker compose pull
+```
+
+If it still fails, check the tag exists — `MAINTMODE_VERSION` must name a
+published release tag, a branch, a `sha-` tag or `latest`.
 
 ### Port already in use
 
