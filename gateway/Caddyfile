@@ -1,0 +1,61 @@
+# MaintMode gateway — the one HTTP entry point of the stack.
+#
+# Plain HTTP on :3000 inside the compose network; compose publishes it on the
+# host (127.0.0.1:3000 by default). TLS is NOT terminated here: put your own
+# reverse proxy in front and send everything to this port (see README,
+# "Behind a reverse proxy with TLS").
+#
+# WHY THIS EXISTS
+#
+# The browser talks to the frontend for everything except one thing: Google
+# sign-in is an OAuth dance run by the backend, so the browser itself must reach
+# two backend routes —
+#
+#   GET /auth/api/v1/login/oauth/{provider}/start     the "Sign in with" button
+#   GET /auth/api/v1/login/oauth/{provider}/callback  where Google sends it back
+#
+# Every other backend route (password and code sign-in, break-glass, token
+# refresh, the whole application API) is called by the frontend server over the
+# compose network and has no business being reachable from a browser. So this
+# file exposes exactly those two routes and nothing else of the backend.
+#
+# The /auth prefix is stripped before proxying: the backend serves
+# /api/v1/login/oauth/..., the browser and Google see /auth/api/v1/login/oauth/...
+# That external form is what goes into the Google redirect URI and into
+# redirect_uri / oauth_cookie_path in config/app.config.yaml.
+
+{
+	admin off
+	auto_https off
+	servers {
+		# Your TLS proxy sits in front of this gateway and sets X-Forwarded-Proto
+		# and X-Forwarded-Host; without trusting it, Caddy would overwrite them
+		# with its own plain-HTTP view and the frontend would build http:// URLs
+		# for an https:// site. Private ranges cover a proxy on the same host
+		# (it arrives through the Docker bridge) or on your LAN.
+		trusted_proxies static private_ranges
+	}
+}
+
+:3000 {
+	@oauth_dance {
+		method GET
+		path /auth/api/v1/login/oauth/*/start /auth/api/v1/login/oauth/*/callback
+	}
+	handle @oauth_dance {
+		uri strip_prefix /auth
+		reverse_proxy maintmode:8000
+	}
+
+	# The rest of the backend surface is internal. Answered here rather than
+	# passed to the frontend, so the boundary is visible in this file.
+	handle /auth/api/* {
+		respond 404
+	}
+
+	# Everything else is the frontend: pages, its /api/* routes, and the
+	# /auth/oauth/callback page the backend redirects to after Google.
+	handle {
+		reverse_proxy ui:3000
+	}
+}
