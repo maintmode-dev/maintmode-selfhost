@@ -18,7 +18,7 @@ app:
   # Where the backend sends a browser back at the end of Google sign-in. Must
   # match MAINTMODE_APP_BASE_URL in .env — a mismatch redirects users into
   # nowhere after an otherwise successful login.
-  frontend_url: http://localhost:3000
+  frontend_url: http://localhost:9000
   # The frontend page that finishes Google sign-in, appended to frontend_url.
   # Fixed by the frontend; do not change it.
   oauth_callback_path: /auth/oauth/callback
@@ -34,14 +34,18 @@ auth:
   # (`bootstrap` at the bottom of this file) and invites everyone else. See
   # README.md, "First login".
   #
-  # Setting this to true lets ANY Google account create an account on your
-  # instance. Only do that if you front it with something that already
-  # restricts who can reach it.
+  # Setting this to true lets anyone who can sign in through an enabled
+  # provider (Google, GitHub, ...) create an account on your instance, with the
+  # guest role. Only do that if you front it with something that already
+  # restricts who can reach it, or restrict Google to your Workspace domains
+  # (`allowed_hosted_domains` under the google provider below).
   allow_open_signup: false
 
 jwtverifier:
   # The backend both mints and verifies its own tokens, checking them against
   # the public half of jwt.issuer_private_key in-process: nothing is fetched.
+  # Must equal jwt.issuer_name: tokens are minted with that issuer and
+  # verified against this one, so a mismatch rejects every sign-in.
   jwt_issuer: oauth-service
   jwt_leeway: 30s
 
@@ -140,8 +144,41 @@ oauth_providers:
       # /auth/api/v1/login/oauth/google/callback. Must be registered in Google
       # byte for byte. A mismatch fails on Google's side with
       # redirect_uri_mismatch and never reaches the backend logs.
-      redirect_uri: "http://localhost:3000/auth/api/v1/login/oauth/google/callback"
+      redirect_uri: "http://localhost:9000/auth/api/v1/login/oauth/google/callback"
       client_secret: <secret:auth_provider/google/client_secret>
+      # Optional: admit only Google Workspace accounts from these domains (the
+      # `hd` claim). Empty or absent admits any Google account that has an
+      # invitation — or any at all, with allow_open_signup: true.
+      # jwtverifier:
+      #   allowed_hosted_domains: ["example.com"]
+    # GitHub sign-in, managed from the admin UI (Administration →
+    # Authentication). This entry holds only GitHub's endpoints: the admin UI
+    # refuses to create a provider this file does not list, so without it
+    # GitHub could not be added at all. It stays off until an admin enters a
+    # GitHub OAuth app's client ID and secret, with the callback URL
+    # <your public URL>/auth/api/v1/login/oauth/github/callback.
+    github:
+      display_name: GitHub
+      authorize_url: https://github.com/login/oauth/authorize
+      token_url: https://github.com/login/oauth/access_token
+      api_base_url: https://api.github.com
+      managed_by: ui
+    # Your own OpenID Connect provider (Keycloak, Authentik, Okta, Azure AD,
+    # ...). `custom` ships no defaults, so this entry carries everything. Off
+    # until you fill it in and set enabled: true; the issuer must publish
+    # /.well-known/openid-configuration. Register the callback URL
+    # <your public URL>/auth/api/v1/login/oauth/custom/callback with the
+    # provider, as redirect_uri below. The client secret goes into
+    # app.secrets.yaml under auth_provider/custom/client_secret; that key must
+    # exist even while this provider is off.
+    custom:
+      display_name: "Corporate SSO"
+      issuer_url: "https://sso.example.com/realms/maintmode"
+      managed_by: config
+      enabled: false
+      client_id: "REPLACE_ME"
+      redirect_uri: "http://localhost:3000/auth/api/v1/login/oauth/custom/callback"
+      client_secret: <secret:auth_provider/custom/client_secret>
 
 jwt:
   issuer_name: oauth-service
@@ -157,23 +194,37 @@ jwt:
   refresh_token_distributed_lock_ttl: 5s
 
 notify_transport:
-  # Slack, Telegram, and SMTP credentials are NOT configured here. They live
-  # encrypted in the database and are set up from the admin UI after you log
-  # in, so adding a notification channel needs no redeploy.
+  # Slack, Telegram, and SMTP are set up from the admin UI after you log in
+  # (Administration → Integrations): their credentials live encrypted in the
+  # database, and changing them needs no redeploy. That is what a transport
+  # with no section under `transports:` gets, which is all of them here.
+  #
+  # To keep a transport's credentials in your own secret store instead,
+  # declare it under `transports:` (slack, telegram, email) with
+  # `managed_by: config`, `enabled`, and its settings; its secret (bot_token,
+  # or password for email) must be a <secret:...> reference into
+  # app.secrets.yaml. It is then read-only in the admin UI and changes apply on
+  # restart. Declaring a transport an admin already configured takes it over
+  # and wipes the credential stored in the database.
   use_stub: false
 
 task_processor:
   messaging:
     workers: 10
     max_attempts: 5
-  # Cron fields are "minute hour day-of-month month day-of-week".
+  # Cron fields are "minute hour day-of-month month day-of-week", evaluated in
+  # UTC whatever the host's time zone. Every cron_spec is required: an empty or
+  # malformed one fails startup.
+  #
+  # Cancels a maintenance that has not started `threshold` after its planned
+  # start.
   maint_auto_cancel:
     cron_spec: "* * * * *"
     threshold: 15m
     batch_limit: 100
   audit_prune:
-    # Daily at 03:00, container-local time. Audit rows older than the retention
-    # are deleted in batches — raise it if you have a compliance requirement.
+    # Daily at 03:00 UTC. Audit rows older than the retention are deleted in
+    # batches — raise it if you have a compliance requirement.
     cron_spec: "0 3 * * *"
     retention: 8760h # 365 days
     batch_limit: 1000
@@ -184,7 +235,7 @@ task_processor:
     cron_spec: "0 3 * * *"
     retention: 8760h # 365 days
     batch_limit: 1000
-  # Deletes spent sign-in codes. Required: an empty cron_spec fails startup.
+  # Deletes spent sign-in codes.
   otp_prune:
     cron_spec: "15 3 * * *"
     retention: 24h
