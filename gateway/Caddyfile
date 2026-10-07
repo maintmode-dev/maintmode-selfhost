@@ -27,18 +27,26 @@
 {
 	admin off
 	auto_https off
-	# No trusted_proxies, deliberately: this gateway trusts no incoming
-	# X-Forwarded-* header and sets X-Forwarded-For to the address that actually
-	# connected. The backend rate-limits sign-in by that address, so a client
-	# that could set it — anyone on your LAN, if private ranges were trusted —
-	# would get a fresh budget with every request. The frontend takes its public
-	# URL from AUTH_URL (compose.yaml), not from these headers.
+	# The client address. The backend rate-limits sign-in by it, so a client
+	# that could choose it would get a fresh budget with every request. Every
+	# upstream below therefore receives X-Forwarded-For holding exactly ONE
+	# address, {client_ip}, never a chain a client could have prefixed.
+	#
+	# No trusted_proxies, deliberately: {client_ip} is then the address that
+	# actually connected, whatever headers the request carries. The frontend
+	# takes its public URL from AUTH_URL (compose.yaml), not from these headers.
 	#
 	# The cost: behind your own TLS proxy every client arrives as that proxy,
 	# so the backend's limit is one bucket for all; limit per client in the
 	# proxy (README, "Rate limiting at the edge"). If you know the address the
-	# proxy connects from, `servers { trusted_proxies static <address>/32 }`
-	# here restores per-client keys without opening the header to anyone else.
+	# proxy connects from, add `trusted_proxies static <address>/32` below to
+	# restore per-client keys. Trust that one address, never private_ranges:
+	# trusting your LAN lets anyone on it pick their own address.
+	# trusted_proxies_strict reads the proxy's X-Forwarded-For from the right,
+	# so {client_ip} is the address the proxy saw, not one a client prepended.
+	servers {
+		trusted_proxies_strict
+	}
 }
 
 :3000 {
@@ -48,7 +56,9 @@
 	}
 	handle @oauth_dance {
 		uri strip_prefix /auth
-		reverse_proxy maintmode:8000
+		reverse_proxy maintmode:8000 {
+			header_up X-Forwarded-For {client_ip}
+		}
 	}
 
 	# The rest of the backend surface is internal. Answered here rather than
@@ -60,6 +70,8 @@
 	# Everything else is the frontend: pages, its /api/* routes, and the
 	# /auth/oauth/callback page the backend redirects to after Google.
 	handle {
-		reverse_proxy ui:3000
+		reverse_proxy ui:3000 {
+			header_up X-Forwarded-For {client_ip}
+		}
 	}
 }

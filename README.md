@@ -436,11 +436,15 @@ you the way Caddy does.
 Google sign-in puts two backend routes on your public surface. The backend
 caps its sign-in routes per client (30 requests a minute,
 `api_server.rate_limiter`), keyed on the address that connected to the gateway.
-The gateway trusts no incoming `X-Forwarded-For`, so a client cannot fake its
-way into a fresh budget — but behind your own proxy every client arrives as
-that proxy and shares one bucket, unless you trust the proxy's exact address in
-`gateway/Caddyfile`. Either way a per-client limit at your proxy, where the real
-address is known, stops a flood before it reaches the application.
+The gateway trusts no incoming `X-Forwarded-For` and hands the application
+exactly one client address, so a client cannot fake its way into a fresh
+budget — but behind your own proxy every client arrives as that proxy and
+shares one bucket, unless you trust the proxy's exact address in
+`gateway/Caddyfile` (`trusted_proxies static <address>/32`; the comment there
+explains it). Trust only that address, never `private_ranges`: trusting your
+LAN lets anyone on it choose the address they are limited by. Either way a
+per-client limit at your proxy, where the real address is known, stops a flood
+before it reaches the application.
 
 Two rules make it work:
 
