@@ -69,6 +69,10 @@ backend build expects.
 - **An HTTPS URL on a real domain**, if this is going to be used by anyone
   other than you. See [Behind a reverse proxy with TLS](#behind-a-reverse-proxy-with-tls)
   and [Does it have to be on the internet?](#does-it-have-to-be-on-the-internet)
+  Plain HTTP works only at `localhost`: several sign-in cookies are marked
+  `Secure`, and browsers drop those over HTTP anywhere else. On, say,
+  `http://10.0.0.5:3000`, sign-in by emailed code and password reset fail, and
+  sessions end at the first token refresh, about 15 minutes in.
 
 ### Ports
 
@@ -387,9 +391,15 @@ Caddy obtains and renews a certificate automatically. The whole config:
 
 ```caddyfile
 maintmode.example.com {
+	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy 127.0.0.1:3000
 }
 ```
+
+`Strict-Transport-Security` (HSTS) tells browsers to use HTTPS only for this
+host from then on, so nobody can downgrade a user to plain HTTP. Neither Caddy
+nor MaintMode sends it by default. Add it once HTTPS works: browsers remember it
+for the `max-age`, a year here.
 
 Point your domain's A record at the host first — Caddy needs to answer an ACME
 challenge on port 80 before it can issue the certificate.
@@ -403,6 +413,8 @@ server {
 
     ssl_certificate     /etc/letsencrypt/live/maintmode.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/maintmode.example.com/privkey.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
