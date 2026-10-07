@@ -61,9 +61,9 @@ api_server:
   name: api
   host: 0.0.0.0
   port: 8000
-  # Cap on the login surface, keyed on the connecting address. Behind the
-  # gateway and the frontend server that address is theirs, not the user's, so
-  # in practice this is one bucket shared by every user — keep it generous.
+  # Cap on the login surface, per client: keyed on the address that connected
+  # to the gateway. Behind your own proxy that address is the proxy's — one
+  # bucket for everyone — unless gateway/Caddyfile trusts the proxy's address.
   rate_limiter:
     requests_per_minute: 30
     burst: 30

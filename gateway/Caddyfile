@@ -27,14 +27,18 @@
 {
 	admin off
 	auto_https off
-	servers {
-		# Your TLS proxy sits in front of this gateway and sets X-Forwarded-Proto
-		# and X-Forwarded-Host; without trusting it, Caddy would overwrite them
-		# with its own plain-HTTP view and the frontend would build http:// URLs
-		# for an https:// site. Private ranges cover a proxy on the same host
-		# (it arrives through the Docker bridge) or on your LAN.
-		trusted_proxies static private_ranges
-	}
+	# No trusted_proxies, deliberately: this gateway trusts no incoming
+	# X-Forwarded-* header and sets X-Forwarded-For to the address that actually
+	# connected. The backend rate-limits sign-in by that address, so a client
+	# that could set it — anyone on your LAN, if private ranges were trusted —
+	# would get a fresh budget with every request. The frontend takes its public
+	# URL from AUTH_URL (compose.yaml), not from these headers.
+	#
+	# The cost: behind your own TLS proxy every client arrives as that proxy,
+	# so the backend's limit is one bucket for all; limit per client in the
+	# proxy (README, "Rate limiting at the edge"). If you know the address the
+	# proxy connects from, `servers { trusted_proxies static <address>/32 }`
+	# here restores per-client keys without opening the header to anyone else.
 }
 
 :3000 {

@@ -398,9 +398,9 @@ server {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
 
-        # The frontend builds absolute URLs from these. Without them it
-        # generates http:// links against an https:// site and sign-in
-        # fails. The gateway passes them through from a proxy on this host.
+        # Conventional; the frontend does not depend on them (it takes its
+        # public URL from MAINTMODE_APP_BASE_URL), and the gateway replaces
+        # X-Forwarded-For with the address that connected to it.
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -424,11 +424,13 @@ you the way Caddy does.
 ### Rate limiting at the edge
 
 Google sign-in puts two backend routes on your public surface. The backend
-caps its sign-in routes (30 requests a minute, `api_server.rate_limiter`), but
-it keys that cap on the connecting address — the gateway's or the frontend
-server's, never the user's — so it is one bucket shared by everyone, not a
-per-user limit. A per-client limit at your proxy, where the real address is
-still known, is what stops one client from flooding the sign-in surface.
+caps its sign-in routes per client (30 requests a minute,
+`api_server.rate_limiter`), keyed on the address that connected to the gateway.
+The gateway trusts no incoming `X-Forwarded-For`, so a client cannot fake its
+way into a fresh budget — but behind your own proxy every client arrives as
+that proxy and shares one bucket, unless you trust the proxy's exact address in
+`gateway/Caddyfile`. Either way a per-client limit at your proxy, where the real
+address is known, stops a flood before it reaches the application.
 
 Two rules make it work:
 

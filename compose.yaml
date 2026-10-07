@@ -158,6 +158,10 @@ services:
       # Where the BROWSER is sent to start Google sign-in: the public URL plus
       # the gateway's /auth prefix. Derived, so it cannot drift from the above.
       MAINTMODE_AUTH_PUBLIC_BASE_URL: ${MAINTMODE_APP_BASE_URL}/auth
+      # The public origin for Auth.js. Without it the frontend derives its URLs
+      # from X-Forwarded-* headers, which the gateway does not pass through
+      # (gateway/Caddyfile), or from its own bind address.
+      AUTH_URL: ${MAINTMODE_APP_BASE_URL}
     # No published ports: the gateway is the way in.
     depends_on:
       maintmode:
