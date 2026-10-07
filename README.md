@@ -326,10 +326,15 @@ administrator is the **break-glass** account, which signs in with the
    administrator.
 3. In the admin UI, set up the email integration (your SMTP server).
    Invitations are delivered only by email.
-4. Invite yourself — your own Google address — with the admin role, and invite
+4. Set up Slack or Telegram under **Administration → Integrations**, then
+   create at least one notification channel under **Channels**. Every
+   maintenance must notify at least one channel, so until one exists nobody can
+   create a maintenance. Email does not count: it delivers invitations and
+   sign-in codes only, and a channel cannot be created on it.
+5. Invite yourself — your own Google address — with the admin role, and invite
    your colleagues.
-5. Sign out, open the link from your invitation email, and sign in with Google.
-6. *Only then* expose the instance (reverse proxy, or
+6. Sign out, open the link from your invitation email, and sign in with Google.
+7. *Only then* expose the instance (reverse proxy, or
    `MAINTMODE_BIND_ADDRESS=0.0.0.0`).
 
 `compose.yaml` binds port 3000 to `127.0.0.1` by default, so a fresh
@@ -537,6 +542,13 @@ release. Set `MAINTMODE_VERSION` to a release tag in production: `main` and
 want. Keep the backend and
 migrations images on the same version — they ship as a pair, and the migrations
 image contains exactly the schema that backend build expects.
+
+**Taking a newer `config/app.config.yaml`?** Compare your
+`config/app.secrets.yaml` with `config/app.secrets.example.yaml` and add any
+key you are missing: every `<secret:...>` the config references must exist, or
+the backend refuses to start. For example, the `custom` sign-in provider
+references `auth_provider/custom/client_secret`, which can stay `""` while that
+provider is off.
 
 To roll back, set the previous tag and `up -d` again — but note that a
 migration applied by the newer version is *not* undone, and an older backend
