@@ -15,17 +15,24 @@
 environment: prod
 
 app:
-  # Where the backend sends a browser back after the OAuth exchange. Must match
-  # MAINTMODE_APP_BASE_URL in .env — a mismatch redirects users into nowhere
-  # after an otherwise successful login.
+  # Where the backend sends a browser back at the end of Google sign-in. Must
+  # match MAINTMODE_APP_BASE_URL in .env — a mismatch redirects users into
+  # nowhere after an otherwise successful login.
   frontend_url: http://localhost:3000
+  # The frontend page that finishes Google sign-in, appended to frontend_url.
+  # Fixed by the frontend; do not change it.
+  oauth_callback_path: /auth/oauth/callback
+  # The Path of the two short-lived sign-in cookies. It must be the EXTERNAL
+  # prefix the browser sees: the gateway strips /auth before the backend sees
+  # the request, but the browser only sends a cookie back to the path it was set
+  # for. Do not change it.
+  oauth_cookie_path: /auth/api/v1/login/oauth
 
 auth:
-  # Invite-only. An unknown user with no invitation is rejected.
-  #
-  # The one exception is the very first login on an instance with zero admins:
-  # that user is made administrator regardless of this setting. Log in yourself
-  # before anyone else can reach the instance. See README.md, "First login".
+  # Invite-only. An unknown user with no invitation is rejected — on a fresh
+  # instance too. The first administrator signs in with the break-glass password
+  # (`bootstrap` at the bottom of this file) and invites everyone else. See
+  # README.md, "First login".
   #
   # Setting this to true lets ANY Google account create an account on your
   # instance. Only do that if you front it with something that already
@@ -33,16 +40,10 @@ auth:
   allow_open_signup: false
 
 jwtverifier:
-  # The backend both mints and verifies its own tokens; the JWKS endpoint it
-  # fetches from is its own, in-process. localhost is correct here — it means
-  # "this same container", not your machine.
+  # The backend both mints and verifies its own tokens, checking them against
+  # the public half of jwt.issuer_private_key in-process: nothing is fetched.
   jwt_issuer: oauth-service
-  jwks_url: http://localhost:8000/api/v1/.well-known/jwks.json
-  jwks_refresh_interval: 1h
-  jwks_http_timeout: 10s
   jwt_leeway: 30s
-  jwks_unknown_kid_refresh_rate: 5m
-  jwks_unknown_kid_wait_max: 10s
 
 rbac:
   # The role matrix ships inside the image at /app/authz (MAINTMODE_AUTHZ_DIR).
@@ -60,8 +61,9 @@ api_server:
   name: api
   host: 0.0.0.0
   port: 8000
-  # Per-IP cap on the login surface. This is an anti-enumeration ceiling, not a
-  # business rule — legitimate users hit it only if something is looping.
+  # Cap on the login surface, per client: keyed on the address that connected
+  # to the gateway. Behind your own proxy that address is the proxy's — one
+  # bucket for everyone — unless gateway/Caddyfile trusts the proxy's address.
   rate_limiter:
     requests_per_minute: 30
     burst: 30
@@ -116,22 +118,30 @@ valkey:
   db: 0
 
 oauth_providers:
-  google:
-    # Must be the same client ID the frontend uses. The frontend performs the
-    # code exchange with Google; the backend only verifies the resulting ID
-    # token offline, using this value as the expected audience. If the two
-    # differ, every login fails audience validation.
-    client_id: <secret:oauth/google/client_id>
-    jwtverifier:
-      jwks_url: https://www.googleapis.com/oauth2/v3/certs
-      jwt_issuers:
-        - "accounts.google.com"
-        - "https://accounts.google.com"
-      jwks_refresh_interval: 1h
-      jwks_http_timeout: 10s
-      jwt_leeway: 30s
-      jwks_unknown_kid_refresh_rate: 5m
-      jwks_unknown_kid_wait_max: 10s
+  # Login providers. The backend runs the OAuth exchange itself as a
+  # confidential client, so it needs the client ID, the client secret, and the
+  # redirect URI you registered with Google. See README.md, "Set up Google
+  # OAuth".
+  #
+  # managed_by: config means the provider is declared here: read-only in the
+  # admin UI, changes apply on restart, and the secret is a <secret:...>
+  # reference into app.secrets.yaml, never a literal. To manage Google from the
+  # admin UI instead, replace everything below `issuer_url` with
+  # `managed_by: ui` and drop its secret from app.secrets.yaml.
+  providers:
+    google:
+      display_name: Google
+      issuer_url: https://accounts.google.com
+      managed_by: config
+      enabled: true
+      # The Client ID from Google Cloud Console. Not a secret.
+      client_id: "REPLACE_ME.apps.googleusercontent.com"
+      # The EXTERNAL URL Google sends the browser back to: your public URL, then
+      # /auth/api/v1/login/oauth/google/callback. Must be registered in Google
+      # byte for byte. A mismatch fails on Google's side with
+      # redirect_uri_mismatch and never reaches the backend logs.
+      redirect_uri: "http://localhost:3000/auth/api/v1/login/oauth/google/callback"
+      client_secret: <secret:auth_provider/google/client_secret>
 
 jwt:
   issuer_name: oauth-service
@@ -139,6 +149,10 @@ jwt:
   issuer_kid: <secret:jwt/issuer_kid>
   access_token_ttl: 15m
   refresh_token_ttl: 720h # 30 days
+  # Signed out after this long without activity, and after this long from
+  # sign-in whatever the activity.
+  session_inactive_lifetime: 168h # 7 days
+  session_max_lifetime: 720h # 30 days
   refresh_token_grace_period: 30s
   refresh_token_distributed_lock_ttl: 5s
 
@@ -170,6 +184,11 @@ task_processor:
     cron_spec: "0 3 * * *"
     retention: 8760h # 365 days
     batch_limit: 1000
+  # Deletes spent sign-in codes. Required: an empty cron_spec fails startup.
+  otp_prune:
+    cron_spec: "15 3 * * *"
+    retention: 24h
+    batch_limit: 1000
 
 # Master key wrapping the data keys that encrypt integration secrets (your
 # Slack token, SMTP password, ...) at rest in the database.
@@ -184,3 +203,13 @@ crypto:
   active_kek_uri: local-kms://selfhost-1
   local_keys:
     "local-kms://selfhost-1": <secret:crypto/kek/selfhost-1>
+
+# Break-glass sign-in: the administrator account behind the password alone, at
+# /login/recovery. It is how the first administrator gets in on a fresh
+# instance, and the way back in if every other sign-in method breaks.
+#
+# The password lives in app.secrets.yaml under `bootstrap/password`. An empty
+# value means this instance has no break-glass — and then a fresh instance has
+# no way to create its first administrator. The key must exist either way.
+bootstrap:
+  password: <secret:bootstrap/password>

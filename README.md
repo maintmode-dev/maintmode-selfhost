@@ -61,19 +61,22 @@ backend build expects.
 - **Disk:** 5 GB for images and a young database. Growth is driven almost
   entirely by the audit log, which is pruned to 365 days by default.
 - **A Google account** with access to
-  [Google Cloud Console](https://console.cloud.google.com/). Google OAuth is
-  currently the only sign-in method — an instance without it has no login at
-  all.
-- **A public HTTPS URL**, if this is going to be reachable by anyone other than
-  you. See [Behind a reverse proxy with TLS](#behind-a-reverse-proxy-with-tls).
+  [Google Cloud Console](https://console.cloud.google.com/). Google is the
+  sign-in method this guide sets up for your users.
+- **An SMTP server** the backend can reach. The instance is invite-only and
+  invitations go out by email; you enter the server in the admin UI after the
+  first login. The same transport enables sign-in by emailed code.
+- **An HTTPS URL on a real domain**, if this is going to be used by anyone
+  other than you. See [Behind a reverse proxy with TLS](#behind-a-reverse-proxy-with-tls)
+  and [Does it have to be on the internet?](#does-it-have-to-be-on-the-internet)
 
 ### Ports
 
 | Port | Where | Purpose |
 | --- | --- | --- |
-| 3000 | published on the host | The web interface. This is the only port published, and it binds to `127.0.0.1` by default. Change with `MAINTMODE_HTTP_PORT`. |
-| 8000 | compose network only | Backend API. Reached by the frontend, never by a browser. |
-| 8001 | compose network only | Backend health and readiness. |
+| 3000 | published on the host | The gateway: the web interface, plus the two backend routes of Google sign-in. This is the only port published, and it binds to `127.0.0.1` by default. Change with `MAINTMODE_HTTP_PORT`. |
+| 8000 | compose network only | Backend API. Called by the frontend server. A browser reaches only `/auth/api/v1/login/oauth/{provider}/start` and `/callback`, through the gateway; every other backend route stays internal. |
+| 8001 | compose network only | Backend health and readiness. Never published, not even through the gateway. |
 | 5432 | compose network only | Postgres. Deliberately not published. |
 | 6379 | compose network only | Valkey. Deliberately not published. |
 
@@ -83,11 +86,17 @@ Only port 3000 needs to be free on your host.
 
 ## Set up Google OAuth
 
-**Do this first.** It is the step most installs stall on, and the stack will
-not start without its output.
+**Do this first.** It is the step most installs stall on.
 
 You need two values — a client ID and a client secret — and you need to
 register one exact redirect URI.
+
+How sign-in works, because it explains every value below: the "Sign in with
+Google" button sends the browser to your instance's backend, which redirects it
+to Google; Google sends the browser back to the backend's callback, and the
+backend exchanges the code with Google directly, using the client secret. The
+backend is a *confidential* client: the secret lives on your server, never in a
+browser.
 
 ### 1. Create or pick a project
 
@@ -122,36 +131,49 @@ Under **APIs & Services → Credentials → Create Credentials → OAuth client 
 - **Authorized redirect URIs → Add URI.** This is the part that matters:
 
   ```
-  <MAINTMODE_APP_BASE_URL>/api/auth/callback/google
+  <MAINTMODE_APP_BASE_URL>/auth/api/v1/login/oauth/google/callback
   ```
 
   Substituting the URL your users will actually type. For a local trial:
 
   ```
-  http://localhost:3000/api/auth/callback/google
+  http://localhost:3000/auth/api/v1/login/oauth/google/callback
   ```
 
   Behind TLS on your own domain:
 
   ```
-  https://maintmode.example.com/api/auth/callback/google
+  https://maintmode.example.com/auth/api/v1/login/oauth/google/callback
   ```
 
   It must match **exactly** — scheme, host, port, and path. `http` vs `https`,
   a trailing slash, `localhost` vs `127.0.0.1`, and a missing port are all
   mismatches. Google compares the string, not the destination.
 
+  Note the `/auth` prefix. The backend itself serves
+  `/api/v1/login/oauth/...`; the gateway puts it under `/auth` and strips the
+  prefix on the way in. Google and the browser see the **external** form, with
+  `/auth`, and that is the one you register. Registering the internal form
+  fails with `redirect_uri_mismatch` on Google's side, which never reaches
+  MaintMode's logs.
+
   You may register several URIs on one client, which is handy if you want to
   test locally and run in production against the same client.
 
 - **Authorized JavaScript origins** can be left empty. MaintMode's login is a
-  server-side redirect flow; nothing initiates it from browser JavaScript.
+  server-side redirect flow; nothing calls Google from browser JavaScript.
 
 ### 4. Copy the credentials
 
 Google shows a **Client ID** (ends in `.apps.googleusercontent.com`) and a
-**Client secret**. You will paste both into `.env`, and the client ID again
-into the backend secrets file.
+**Client secret**. Both go to the backend:
+
+- the client ID into `config/app.config.yaml`, at
+  `oauth_providers.providers.google.client_id`;
+- the client secret into `config/app.secrets.yaml`, under
+  `auth_provider/google/client_secret`. The config file only references it
+  (`<secret:auth_provider/google/client_secret>`); never paste the secret into
+  the config file itself.
 
 The client ID is not sensitive — it travels in every browser redirect. The
 client secret is: it stays on your server and is never sent to a browser.
@@ -175,7 +197,7 @@ cp .env.example .env
 
 ### 3. Generate secrets
 
-Four random values. Run each command and keep the output — you will paste them
+Six random values. Run each command and keep the output — you will paste them
 in the next two steps.
 
 ```bash
@@ -193,9 +215,12 @@ openssl rand -hex 32
 
 # Signing key ID (jwt/issuer_kid) — shorter
 openssl rand -hex 16
+
+# Break-glass password (bootstrap/password) — you will type this one
+openssl rand -base64 24
 ```
 
-Generate each one separately; do not reuse a single value across all five.
+Generate each one separately; do not reuse a single value across them.
 
 A note on the signing key: it is a raw 32-byte P-256 scalar, hex-encoded, so
 `openssl rand -hex 32` is exactly right. Do **not** use
@@ -213,12 +238,11 @@ Open `.env` and set:
 | `POSTGRES_PASSWORD` | the database password you generated |
 | `MAINTMODE_AUTH_SECRET` | the session secret (min 32 chars) |
 | `MAINTMODE_APP_BASE_URL` | the URL users will type, no trailing slash |
-| `MAINTMODE_GOOGLE_OAUTH_CLIENT_ID` | from Google Cloud Console |
-| `MAINTMODE_GOOGLE_OAUTH_CLIENT_SECRET` | from Google Cloud Console |
 
-`MAINTMODE_APP_BASE_URL` must match the redirect URI you registered with
-Google. If you registered `http://localhost:3000/api/auth/callback/google`,
-this is `http://localhost:3000`.
+`MAINTMODE_APP_BASE_URL` must be the start of the redirect URI you registered
+with Google. If you registered
+`http://localhost:3000/auth/api/v1/login/oauth/google/callback`, this is
+`http://localhost:3000`.
 
 ### 5. Create the backend secrets file
 
@@ -232,25 +256,36 @@ Open it and replace every `REPLACE_ME`:
 | Key | Value |
 | --- | --- |
 | `db/dsn` | the same database password as `POSTGRES_PASSWORD`, inside the connection string |
-| `oauth/google/client_id` | the same client ID as in `.env` |
+| `auth_provider/google/client_secret` | the Client secret from Google Cloud Console |
 | `jwt/issuer_private_key` | the 64-hex-char signing key |
 | `jwt/issuer_kid` | the 32-hex-char key ID |
 | `crypto/kek/selfhost-1` | the 64-hex-char encryption key |
+| `bootstrap/password` | the break-glass password (at least 20 characters) |
 
-Two values appear in both files and **must** match exactly: the database
-password and the Google client ID. A mismatched password fails at startup with
-an authentication error; a mismatched client ID fails later, at login, with an
-audience validation error that is much harder to read.
+The database password appears in both files and **must** match exactly; a
+mismatch fails at startup with an authentication error.
+
+Keep the break-glass password somewhere safe — a password manager, not this
+host only. On a fresh instance it is the only way to sign in as the first
+administrator.
 
 The `chmod 644` matters: the backend container runs as an unprivileged user and
 cannot read a `600` file owned by you.
 
 ### 6. Review the backend config
 
-`config/app.config.yaml` works unchanged, with one thing worth checking:
-`app.frontend_url` should equal `MAINTMODE_APP_BASE_URL`. It is where the
-backend sends a browser after a successful OAuth exchange, and a stale value
-drops users somewhere unexpected at the end of an otherwise working login.
+`config/app.config.yaml` needs three edits; everything else works unchanged:
+
+| Key | Value |
+| --- | --- |
+| `app.frontend_url` | the same value as `MAINTMODE_APP_BASE_URL` |
+| `oauth_providers.providers.google.client_id` | the Client ID from Google Cloud Console |
+| `oauth_providers.providers.google.redirect_uri` | exactly the redirect URI you registered with Google |
+
+`app.frontend_url` is where the backend sends a browser at the end of sign-in;
+a stale value drops users somewhere unexpected after an otherwise working
+login. Leave `app.oauth_callback_path` and `app.oauth_cookie_path` as they are:
+they are fixed by the frontend and the gateway.
 
 ### 7. Start
 
@@ -267,7 +302,8 @@ docker compose logs -f
 
 The order is enforced by health checks: Postgres and Valkey become healthy, the
 migration job runs to completion and exits, the backend starts and reports
-ready, then the frontend starts. First start takes a minute or two.
+ready, then the frontend and the gateway start. First start takes a minute or
+two.
 
 ### 8. Open it
 
@@ -279,38 +315,36 @@ Then read the next section before you do anything else.
 
 ## First login
 
-> **⚠️ The first person to sign in becomes the administrator.**
->
-> On a fresh installation with zero administrators, the first successful Google
-> login is granted the admin role automatically. There is no setup token, no
-> invitation, and no lock on this — it is decided purely by who arrives first.
->
-> **Log in yourself, immediately after starting the stack, before the instance
-> is reachable by anyone else.** If a stranger reaches your login page before
-> you do, they become the administrator of your instance.
+A fresh instance is invite-only and has no users, so nobody can sign in with
+Google yet — an unknown account without an invitation is refused. The first
+administrator is the **break-glass** account, which signs in with the
+`bootstrap/password` from `config/app.secrets.yaml` and nothing else.
 
-This is why `compose.yaml` binds port 3000 to `127.0.0.1` by default: a fresh
+1. Open `<MAINTMODE_APP_BASE_URL>/login/recovery` — for a local trial,
+   <http://localhost:3000/login/recovery>.
+2. Enter the break-glass password. You are now signed in as the break-glass
+   administrator.
+3. In the admin UI, set up the email integration (your SMTP server).
+   Invitations are delivered only by email.
+4. Invite yourself — your own Google address — with the admin role, and invite
+   your colleagues.
+5. Sign out, open the link from your invitation email, and sign in with Google.
+6. *Only then* expose the instance (reverse proxy, or
+   `MAINTMODE_BIND_ADDRESS=0.0.0.0`).
+
+`compose.yaml` binds port 3000 to `127.0.0.1` by default, so a fresh
 `docker compose up` is not exposed to your network until you deliberately
 change that.
 
-The safe order is:
+Keep the break-glass password afterwards. It is the way back in when the usual
+sign-in methods are turned off or broken — a revoked Google client, say — and
+`/login/recovery` keeps working regardless. Anyone who has it is an
+administrator, so treat it like a root password; to retire break-glass
+entirely, set `bootstrap/password` to `""` and restart.
 
-1. `docker compose up -d`
-2. Open the instance and sign in with Google — you are now the administrator
-3. Verify your account shows the admin role
-4. *Only then* expose it (reverse proxy, or `MAINTMODE_BIND_ADDRESS=0.0.0.0`)
-
-After bootstrap, the instance is invite-only: `allow_open_signup: false` in
-`config/app.config.yaml` means an unknown Google account with no invitation is
-rejected. Add your colleagues from the admin UI, which sends them invitations.
-
-If you accidentally let someone else bootstrap, the fastest fix on an instance
-with no real data is to start over:
-
-```bash
-docker compose down -v   # ⚠️ deletes the database
-docker compose up -d
-```
+`allow_open_signup: false` in `config/app.config.yaml` is what keeps the
+instance invite-only. Setting it to `true` lets any Google account create an
+account.
 
 ---
 
@@ -319,18 +353,23 @@ docker compose up -d
 For anything beyond a local trial, put a reverse proxy in front and terminate
 TLS there. MaintMode does not terminate TLS itself.
 
-Three things must agree, and the login flow breaks if any one of them drifts:
+Four things must agree, and the login flow breaks if any one of them drifts:
 
 1. `MAINTMODE_APP_BASE_URL` in `.env` — the public HTTPS URL
 2. `app.frontend_url` in `config/app.config.yaml` — the same value
 3. The Authorized redirect URI in Google Cloud Console —
-   `<that URL>/api/auth/callback/google`
+   `<that URL>/auth/api/v1/login/oauth/google/callback`
+4. `oauth_providers.providers.google.redirect_uri` in
+   `config/app.config.yaml` — the same string as 3
 
-Update all three together whenever the public URL changes, then
+Note the external form in 3 and 4: with the `/auth` prefix, as the browser sees
+it. Update all four together whenever the public URL changes, then
 `docker compose up -d` to apply.
 
-Keep the frontend bound to `127.0.0.1` (the default) when the proxy runs on the
-same host. The proxy reaches it over loopback; nothing else can.
+The proxy sends **everything** to the gateway on port 3000; the gateway decides
+what goes to the backend. Keep the gateway bound to `127.0.0.1` (the default)
+when the proxy runs on the same host. The proxy reaches it over loopback;
+nothing else can.
 
 ### Caddy
 
@@ -359,9 +398,9 @@ server {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
 
-        # The frontend builds absolute URLs from these. Without them it
-        # generates http:// links against an https:// site and the OAuth
-        # redirect fails.
+        # Conventional; the frontend does not depend on them (it takes its
+        # public URL from MAINTMODE_APP_BASE_URL), and the gateway replaces
+        # X-Forwarded-For with the address that connected to it.
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -381,6 +420,93 @@ server {
 
 Certificates come from certbot or your own CA; nginx will not obtain them for
 you the way Caddy does.
+
+### Rate limiting at the edge
+
+Google sign-in puts two backend routes on your public surface. The backend
+caps its sign-in routes per client (30 requests a minute,
+`api_server.rate_limiter`), keyed on the address that connected to the gateway.
+The gateway trusts no incoming `X-Forwarded-For`, so a client cannot fake its
+way into a fresh budget — but behind your own proxy every client arrives as
+that proxy and shares one bucket, unless you trust the proxy's exact address in
+`gateway/Caddyfile`. Either way a per-client limit at your proxy, where the real
+address is known, stops a flood before it reaches the application.
+
+Two rules make it work:
+
+- **Key on the connection's IP, not on `X-Forwarded-For`.** A client sets that
+  header to whatever it likes; a limit keyed on it is bypassed by sending a new
+  "address" with every request.
+- **If something sits in front of your proxy** (Cloudflare, a cloud load
+  balancer), every client arrives from that front's address and shares one
+  bucket. Trust it explicitly and key on the address it reports: in Caddy,
+  `trusted_proxies` plus `key {client_ip}` instead of `{remote_host}`; in
+  nginx, `set_real_ip_from` plus `real_ip_header X-Forwarded-For` (or the
+  front's own header, such as `CF-Connecting-IP`).
+
+nginx has `limit_req` built in:
+
+```nginx
+# In the http {} block:
+limit_req_zone $binary_remote_addr zone=maintmode_auth:10m rate=10r/s;
+
+# In the server {} block, next to location /:
+location /auth/ {
+    limit_req zone=maintmode_auth burst=100 nodelay;
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Caddy needs the third-party
+[`rate_limit`](https://github.com/mholt/caddy-ratelimit) module, which the
+official image does not include. Build Caddy with it
+(`xcaddy build --with github.com/mholt/caddy-ratelimit`), then:
+
+```caddyfile
+{
+	order rate_limit before reverse_proxy
+}
+
+maintmode.example.com {
+	rate_limit {
+		zone maintmode_auth {
+			match {
+				path /auth/*
+			}
+			key {remote_host}
+			events 100
+			window 10s
+		}
+	}
+	reverse_proxy 127.0.0.1:3000
+}
+```
+
+`{remote_host}` is the connection's address, not a header. If you would rather
+not build Caddy, the backend's shared cap is what remains.
+
+### Does it have to be on the internet?
+
+No. Google never connects to your instance: the redirect to the callback is
+made by the user's **browser**, so the instance only has to be reachable from
+your users' browsers, which can be an internal network. What it does need:
+
+- **Outbound HTTPS to Google** from the backend container (`accounts.google.com`,
+  `oauth2.googleapis.com`, `www.googleapis.com`), to exchange the code and
+  check the result.
+- **A redirect URI Google accepts.** Google requires `https` unless the host is
+  `localhost`, and a domain name rather than an IP address — one ending in a
+  public top-level domain. An internal name like
+  `maintmode.corp.example.com` that only your network resolves works; a bare
+  `10.0.0.5` or a `.local` name does not.
+
+If neither is possible, Google sign-in is not for that network. Sign-in by
+emailed code works without Google, given an email server the backend can reach,
+and break-glass works anywhere.
 
 ---
 
@@ -415,6 +541,43 @@ image contains exactly the schema that backend build expects.
 To roll back, set the previous tag and `up -d` again — but note that a
 migration applied by the newer version is *not* undone, and an older backend
 may not tolerate a newer schema. Restoring from backup is the reliable path.
+
+### Upgrading from v0.1.x
+
+v0.1.x let the frontend run Google sign-in; newer versions run it in the
+backend, behind the gateway. The configuration changed with it, and a newer
+backend refuses to start on an old `config/app.config.yaml` (unknown keys are
+an error, not ignored). Pull this repository's current files, then:
+
+1. Take `compose.yaml`, `gateway/Caddyfile`, and `config/app.config.yaml` from
+   this repository, and carry over your own values (`frontend_url` and
+   anything you had changed). Then set
+   `oauth_providers.providers.google.client_id` (the client ID, which used to
+   live in the secrets file) and `oauth_providers.providers.google.redirect_uri`
+   (see [step 6](#6-review-the-backend-config)).
+2. In `config/app.secrets.yaml`, remove `oauth/google/client_id` and add
+   `auth_provider/google/client_secret` (your Google client secret, which used
+   to live in `.env`) and `bootstrap/password`
+   (see `config/app.secrets.example.yaml`).
+3. Remove `MAINTMODE_GOOGLE_OAUTH_CLIENT_ID` and
+   `MAINTMODE_GOOGLE_OAUTH_CLIENT_SECRET` from `.env`.
+4. In Google Cloud Console, add the new redirect URI
+   (`<MAINTMODE_APP_BASE_URL>/auth/api/v1/login/oauth/google/callback`). Remove
+   the old `/api/auth/callback/google` one once sign-in works.
+5. `docker compose up -d`.
+
+**Existing users lose their Google link.** The upgrade's migrations clear the
+table that ties an account to its Google identity, so after it every user's
+Google sign-in is refused as an unknown account. Accounts, roles and data are
+kept; only the link is gone, and inviting an existing address is refused. To
+restore access:
+
+1. Sign in through [break-glass](#first-login) and set up the email
+   integration.
+2. Turn on sign-in by emailed code under the admin UI's authentication
+   settings.
+3. Each user signs in with an emailed code, then links Google again from their
+   profile's sign-in methods.
 
 ---
 
@@ -512,19 +675,23 @@ Authorized redirect URIs**. Usual culprits:
 - A trailing slash on `MAINTMODE_APP_BASE_URL`
 - `localhost` vs `127.0.0.1` — different strings to Google
 - A missing or extra port
-- The path — it is `/api/auth/callback/google`, nothing else
+- The path — it is `/auth/api/v1/login/oauth/google/callback`, with the
+  `/auth` prefix
+- `redirect_uri` in `config/app.config.yaml` differs from the registered one —
+  it is the URI the backend actually sends
 
 After correcting either side, `docker compose up -d`. Google's changes can take
-a few minutes to propagate.
+a few minutes to propagate. This error never shows up in MaintMode's logs:
+Google rejects the request on its side before your instance is involved.
 
 ### The frontend container exits immediately
 
-Almost always a missing or invalid auth variable. All four of
-`MAINTMODE_AUTH_SECRET`, `MAINTMODE_APP_BASE_URL`,
-`MAINTMODE_GOOGLE_OAUTH_CLIENT_ID`, and `MAINTMODE_GOOGLE_OAUTH_CLIENT_SECRET`
-are validated when the auth module loads — before any page renders. If one is
-missing, nothing serves, including `/login`. You get a container that starts
-and dies rather than a site with a broken login page.
+Almost always a missing or invalid auth variable. `MAINTMODE_AUTH_SECRET`,
+`MAINTMODE_APP_BASE_URL`, and `MAINTMODE_AUTH_PUBLIC_BASE_URL` (which
+`compose.yaml` derives from `MAINTMODE_APP_BASE_URL`) are validated when the
+auth module loads — before any page renders. If one is missing, nothing serves,
+including `/login`. You get a container that starts and dies rather than a site
+with a broken login page.
 
 ```bash
 docker compose logs ui
@@ -532,7 +699,7 @@ docker compose logs ui
 
 The error names the offending variable. Check:
 
-- All four are present in `.env` with no empty values
+- Both are present in `.env` with no empty values
 - `MAINTMODE_AUTH_SECRET` is at least 32 characters
 - `MAINTMODE_APP_BASE_URL` is a full URL including the scheme
 - No stray quotes around values — `.env` is not shell, so `KEY="value"` makes
@@ -543,22 +710,29 @@ from `docker compose up` naming the variable, before anything starts.
 
 ### Login fails after Google accepts you
 
-Google authenticated you, but the backend rejected the resulting token. Nearly
-always the client ID in `config/app.secrets.yaml` (`oauth/google/client_id`)
-differs from `MAINTMODE_GOOGLE_OAUTH_CLIENT_ID` in `.env`. The backend
-validates the token's audience against its own copy, and a mismatch fails every
-login.
+Google authenticated you, but the backend did not sign you in. Check the
+backend log first — unlike `redirect_uri_mismatch`, these reach it:
 
 ```bash
-grep GOOGLE_OAUTH_CLIENT_ID .env
-grep client_id config/app.secrets.yaml
+docker compose logs maintmode | grep -i oauth
 ```
 
-They must be identical. Fix and `docker compose up -d`.
+- **No invitation.** The account has no invitation and `allow_open_signup` is
+  `false`, so signup is refused by design — on a fresh instance too. Sign in
+  through [break-glass](#first-login) and invite the account; the invitee must
+  sign in through the link in the invitation email.
+- **Wrong client secret.** The code exchange with Google fails. Compare
+  `auth_provider/google/client_secret` in `config/app.secrets.yaml` with the
+  secret in Google Cloud Console, and `client_id` in `config/app.config.yaml`
+  with the client ID.
+- **Sign-in ends with a `state_invalid` error.** The short-lived sign-in
+  cookie did not come back to the callback: `app.oauth_cookie_path` was
+  changed, or a proxy in front rewrites paths. Restore
+  `/auth/api/v1/login/oauth` and make sure the proxy passes paths through
+  unchanged. (It also appears when the sign-in took longer than ten minutes;
+  just try again.)
 
-The other possibility, once you are past bootstrap: the account has no
-invitation and `allow_open_signup` is `false`, so signup is refused by design.
-Invite the account from the admin UI.
+Fix and `docker compose up -d`.
 
 ### Migrations did not run
 
@@ -627,6 +801,9 @@ degraded:
   `app.config.yaml` must exist in `app.secrets.yaml`
 - A permission error reading `/app/app.secrets.yaml` — the container's
   unprivileged user cannot read it; `chmod 644 config/app.secrets.yaml`
+- `has invalid keys` while reading the config — a key the backend no longer
+  reads, usually a config from an older version. See
+  [Upgrading from v0.1.x](#upgrading-from-v01x)
 
 ### Starting completely over
 
@@ -636,8 +813,8 @@ docker compose down -v
 
 Deletes the containers **and the volumes**, so all data is gone. `.env` and
 `config/app.secrets.yaml` survive, since they are files in your working tree.
-The next `up -d` bootstraps a fresh instance — including a fresh first-login
-admin grant.
+The next `up -d` starts a fresh instance with no users: sign in through
+[break-glass](#first-login) again.
 
 ---
 
@@ -668,8 +845,9 @@ two values.
 
 The only outbound connections a running instance makes are:
 
-- **Google's JWKS endpoint** (`googleapis.com`), to fetch the public keys that
-  verify login tokens. Required for OAuth; it carries no data about you.
+- **Google** (`accounts.google.com`, `oauth2.googleapis.com`,
+  `www.googleapis.com`), during sign-in: the code exchange and the public keys
+  that verify its result. It carries nothing beyond the sign-in itself.
 - **Whatever you configure yourself** — Slack, Telegram, or your SMTP server,
   once you set up notifications.
 
@@ -702,10 +880,11 @@ matters to you.
 
 | File | Purpose |
 | --- | --- |
-| `compose.yaml` | The stack: Postgres, Valkey, migrations, backend, frontend |
-| `.env.example` | Template for `.env` — database, session, and OAuth settings |
+| `compose.yaml` | The stack: Postgres, Valkey, migrations, backend, frontend, gateway |
+| `gateway/Caddyfile` | The gateway: routes the two sign-in routes to the backend, everything else to the frontend |
+| `.env.example` | Template for `.env` — database, session, and public URL |
 | `config/app.config.yaml` | Backend configuration, mounted read-only. Committed; holds no secrets |
-| `config/app.secrets.example.yaml` | Template for `config/app.secrets.yaml` — signing key, encryption key, database DSN |
+| `config/app.secrets.example.yaml` | Template for `config/app.secrets.yaml` — signing key, encryption key, database DSN, Google client secret, break-glass password |
 | `.gitignore` | Keeps `.env`, secrets, and dumps out of git |
 | `LICENSE` | AGPL-3.0 |
 
