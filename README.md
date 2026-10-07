@@ -78,7 +78,7 @@ backend build expects.
 | 8000 | compose network only | Backend API. Called by the frontend server. A browser reaches only `/auth/api/v1/login/oauth/{provider}/start` and `/callback`, through the gateway; every other backend route stays internal. |
 | 8001 | compose network only | Backend health and readiness. Never published, not even through the gateway. |
 | 5432 | compose network only | Postgres. Deliberately not published. |
-| 6379 | compose network only | Valkey. Deliberately not published. |
+| 6379 | compose network only | Valkey. Deliberately not published, and password-protected. |
 
 Only port 3000 needs to be free on your host.
 
@@ -197,11 +197,14 @@ cp .env.example .env
 
 ### 3. Generate secrets
 
-Six random values. Run each command and keep the output — you will paste them
+Seven random values. Run each command and keep the output — you will paste them
 in the next two steps.
 
 ```bash
 # Database password
+openssl rand -hex 32
+
+# Valkey password
 openssl rand -hex 32
 
 # Frontend session secret (MAINTMODE_AUTH_SECRET)
@@ -236,6 +239,7 @@ Open `.env` and set:
 | Variable | Value |
 | --- | --- |
 | `POSTGRES_PASSWORD` | the database password you generated |
+| `VALKEY_PASSWORD` | the Valkey password you generated |
 | `MAINTMODE_AUTH_SECRET` | the session secret (min 32 chars) |
 | `MAINTMODE_APP_BASE_URL` | the URL users will type, no trailing slash |
 
@@ -256,6 +260,7 @@ Open it and replace every `REPLACE_ME`:
 | Key | Value |
 | --- | --- |
 | `db/dsn` | the same database password as `POSTGRES_PASSWORD`, inside the connection string |
+| `valkey/password` | the same Valkey password as `VALKEY_PASSWORD` |
 | `auth_provider/google/client_secret` | the Client secret from Google Cloud Console |
 | `jwt/issuer_private_key` | the 64-hex-char signing key |
 | `jwt/issuer_kid` | the 32-hex-char key ID |
@@ -549,6 +554,11 @@ key you are missing: every `<secret:...>` the config references must exist, or
 the backend refuses to start. For example, the `custom` sign-in provider
 references `auth_provider/custom/client_secret`, which can stay `""` while that
 provider is off.
+
+**Taking a newer `compose.yaml`?** Valkey now requires a password. Generate
+one (`openssl rand -hex 32`), set it as `VALKEY_PASSWORD` in `.env` and as
+`valkey/password` in `config/app.secrets.yaml`, then `docker compose up -d`.
+Until `VALKEY_PASSWORD` is set, compose refuses to start and names it.
 
 To roll back, set the previous tag and `up -d` again — but note that a
 migration applied by the newer version is *not* undone, and an older backend
