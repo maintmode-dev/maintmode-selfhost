@@ -65,7 +65,10 @@ backend build expects.
   sign-in method this guide sets up for your users.
 - **An SMTP server** the backend can reach. The instance is invite-only and
   invitations go out by email; you enter the server in the admin UI after the
-  first login. The same transport enables sign-in by emailed code.
+  first login. The same transport enables sign-in by emailed code. A relay on
+  your internal network (a private address, or a name resolving to one) is
+  refused until you set `notify_transport.allow_internal_hosts: true` in
+  `config/app.config.yaml`.
 - **An HTTPS URL on a real domain**, if this is going to be used by anyone
   other than you. See [Behind a reverse proxy with TLS](#behind-a-reverse-proxy-with-tls)
   and [Does it have to be on the internet?](#does-it-have-to-be-on-the-internet)
@@ -335,7 +338,9 @@ administrator is the **break-glass** account, which signs in with the
 2. Enter the break-glass password. You are now signed in as the break-glass
    administrator.
 3. In the admin UI, set up the email integration (your SMTP server).
-   Invitations are delivered only by email.
+   Invitations are delivered only by email. If the test email fails for a
+   relay on your internal network, see `allow_internal_hosts` in
+   `config/app.config.yaml`.
 4. Set up Slack or Telegram under **Administration → Integrations**, then
    create at least one notification channel under **Channels**. Every
    maintenance must notify at least one channel, so until one exists nobody can
