@@ -71,8 +71,9 @@ backend build expects.
   and [Does it have to be on the internet?](#does-it-have-to-be-on-the-internet)
   Plain HTTP works only at `localhost`: several sign-in cookies are marked
   `Secure`, and browsers drop those over HTTP anywhere else. On, say,
-  `http://10.0.0.5:3000`, sign-in by emailed code and password reset fail, and
-  sessions end at the first token refresh, about 15 minutes in.
+  `http://10.0.0.5:3000`, sign-in by emailed code, password reset and Google
+  sign-in fail, and signed-in users are logged out unpredictably when their
+  session refreshes.
 
 ### Ports
 
