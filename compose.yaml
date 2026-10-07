@@ -49,6 +49,8 @@ services:
       POSTGRES_DB: maintmode
     volumes:
       - db_data:/var/lib/postgresql
+    networks:
+      - data
     # No published port. Nothing outside this compose network needs to reach
     # Postgres, and an exposed 5432 is the single most-scanned port on the
     # internet. To connect a client, use `docker compose exec postgres psql`
@@ -63,14 +65,31 @@ services:
   valkey:
     image: valkey/valkey:9.1.1-alpine
     restart: unless-stopped
-    # appendonly makes the AOF durable across restarts. MaintMode uses Valkey
-    # for rate-limit counters and short-lived distributed locks — losing them
-    # is survivable, but a cold cache after every restart is needless churn.
-    command: valkey-server --appendonly yes
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required — see .env.example}
+    # Valkey holds sign-in state as well as rate-limit counters and locks, so
+    # it requires a password even on the private `data` network.
+    #
+    # The password goes into a config file rather than onto the command line:
+    # process arguments are readable by every user on a Linux host (`ps`). The
+    # file is written as root, handed to the valkey user, and the image's own
+    # entrypoint then drops privileges as usual. appendonly makes the AOF
+    # durable across restarts — losing the counters is survivable, but a cold
+    # start after every restart is needless churn.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        umask 077
+        printf 'requirepass "%s"\n' "$$VALKEY_PASSWORD" > /tmp/auth.conf
+        chown valkey:valkey /tmp/auth.conf
+        exec docker-entrypoint.sh valkey-server /tmp/auth.conf --appendonly yes
     volumes:
       - valkey_data:/data
+    networks:
+      - data
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      # A bare `ping` exits 0 even when refused with NOAUTH, so look for PONG.
+      test: ["CMD-SHELL", "VALKEYCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -88,6 +107,8 @@ services:
     environment:
       GOOSE_DRIVER: postgres
       GOOSE_DBSTRING: postgres://maintmode:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/maintmode?sslmode=disable
+    networks:
+      - data
     depends_on:
       postgres:
         condition: service_healthy
@@ -116,6 +137,13 @@ services:
       - ./config/app.secrets.yaml:/app/app.secrets.yaml:ro
       # The RBAC model and policy ship inside the image at /app/authz. Mount
       # your own only if you are deliberately customising the role matrix.
+    # The only service on all three networks: `data` for Postgres and Valkey,
+    # `app` for the frontend and the gateway, and `edge` for its outbound
+    # calls — Google sign-in, Slack, Telegram, SMTP.
+    networks:
+      - edge
+      - app
+      - data
     # No published ports. The frontend reaches the backend over the compose
     # network, and the browser reaches only the two sign-in routes the gateway
     # lets through. Publishing 8000 would expose the whole API, break-glass
@@ -162,7 +190,11 @@ services:
       # from X-Forwarded-* headers, which the gateway does not pass through
       # (gateway/Caddyfile), or from its own bind address.
       AUTH_URL: ${MAINTMODE_APP_BASE_URL}
-    # No published ports: the gateway is the way in.
+    # No published ports: the gateway is the way in. Only on `app`: the
+    # frontend talks to nothing but the backend, so it has no route to the
+    # database, to Valkey, or out to the internet.
+    networks:
+      - app
     depends_on:
       maintmode:
         condition: service_healthy
@@ -181,8 +213,30 @@ services:
       # login"). Leave it and front the stack with a reverse proxy on the same
       # host, or set MAINTMODE_BIND_ADDRESS=0.0.0.0 in .env.
       - "${MAINTMODE_BIND_ADDRESS:-127.0.0.1}:${MAINTMODE_HTTP_PORT:-3000}:3000"
+    # `edge` carries the published port (an internal network cannot publish
+    # one); `app` reaches the frontend and the backend's sign-in routes.
+    networks:
+      - edge
+      - app
     depends_on:
       - ui
+
+networks:
+  # Three networks, so that a compromised container reaches only what it
+  # needs. `app` and `data` are internal: no route out of the host, and nothing
+  # on them is reachable from outside.
+  #
+  #   edge  gateway (published port), maintmode (outbound calls)
+  #   app   gateway, ui, maintmode
+  #   data  maintmode, migrations, postgres, valkey
+  #
+  # In particular the frontend — the container that parses every browser
+  # request — cannot reach Postgres or Valkey.
+  edge:
+  app:
+    internal: true
+  data:
+    internal: true
 
 volumes:
   # Named volumes, not bind mounts: `docker compose down` (without -v) leaves

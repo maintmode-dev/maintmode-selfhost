@@ -69,6 +69,11 @@ backend build expects.
 - **An HTTPS URL on a real domain**, if this is going to be used by anyone
   other than you. See [Behind a reverse proxy with TLS](#behind-a-reverse-proxy-with-tls)
   and [Does it have to be on the internet?](#does-it-have-to-be-on-the-internet)
+  Plain HTTP works only at `localhost`: several sign-in cookies are marked
+  `Secure`, and browsers drop those over HTTP anywhere else. On, say,
+  `http://10.0.0.5:3000`, sign-in by emailed code, password reset and Google
+  sign-in fail, and signed-in users are logged out unpredictably when their
+  session refreshes.
 
 ### Ports
 
@@ -78,7 +83,7 @@ backend build expects.
 | 8000 | compose network only | Backend API. Called by the frontend server. A browser reaches only `/auth/api/v1/login/oauth/{provider}/start` and `/callback`, through the gateway; every other backend route stays internal. |
 | 8001 | compose network only | Backend health and readiness. Never published, not even through the gateway. |
 | 5432 | compose network only | Postgres. Deliberately not published. |
-| 6379 | compose network only | Valkey. Deliberately not published. |
+| 6379 | compose network only | Valkey. Deliberately not published, and password-protected. |
 
 Only port 3000 needs to be free on your host.
 
@@ -197,11 +202,14 @@ cp .env.example .env
 
 ### 3. Generate secrets
 
-Six random values. Run each command and keep the output — you will paste them
+Seven random values. Run each command and keep the output — you will paste them
 in the next two steps.
 
 ```bash
 # Database password
+openssl rand -hex 32
+
+# Valkey password
 openssl rand -hex 32
 
 # Frontend session secret (MAINTMODE_AUTH_SECRET)
@@ -236,6 +244,7 @@ Open `.env` and set:
 | Variable | Value |
 | --- | --- |
 | `POSTGRES_PASSWORD` | the database password you generated |
+| `VALKEY_PASSWORD` | the Valkey password you generated |
 | `MAINTMODE_AUTH_SECRET` | the session secret (min 32 chars) |
 | `MAINTMODE_APP_BASE_URL` | the URL users will type, no trailing slash |
 
@@ -256,6 +265,7 @@ Open it and replace every `REPLACE_ME`:
 | Key | Value |
 | --- | --- |
 | `db/dsn` | the same database password as `POSTGRES_PASSWORD`, inside the connection string |
+| `valkey/password` | the same Valkey password as `VALKEY_PASSWORD` |
 | `auth_provider/google/client_secret` | the Client secret from Google Cloud Console |
 | `jwt/issuer_private_key` | the 64-hex-char signing key |
 | `jwt/issuer_kid` | the 32-hex-char key ID |
@@ -382,9 +392,15 @@ Caddy obtains and renews a certificate automatically. The whole config:
 
 ```caddyfile
 maintmode.example.com {
+	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy 127.0.0.1:3000
 }
 ```
+
+`Strict-Transport-Security` (HSTS) tells browsers to use HTTPS only for this
+host from then on, so nobody can downgrade a user to plain HTTP. Neither Caddy
+nor MaintMode sends it by default. Add it once HTTPS works: browsers remember it
+for the `max-age`, a year here.
 
 Point your domain's A record at the host first — Caddy needs to answer an ACME
 challenge on port 80 before it can issue the certificate.
@@ -398,6 +414,8 @@ server {
 
     ssl_certificate     /etc/letsencrypt/live/maintmode.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/maintmode.example.com/privkey.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -431,11 +449,15 @@ you the way Caddy does.
 Google sign-in puts two backend routes on your public surface. The backend
 caps its sign-in routes per client (30 requests a minute,
 `api_server.rate_limiter`), keyed on the address that connected to the gateway.
-The gateway trusts no incoming `X-Forwarded-For`, so a client cannot fake its
-way into a fresh budget — but behind your own proxy every client arrives as
-that proxy and shares one bucket, unless you trust the proxy's exact address in
-`gateway/Caddyfile`. Either way a per-client limit at your proxy, where the real
-address is known, stops a flood before it reaches the application.
+The gateway trusts no incoming `X-Forwarded-For` and hands the application
+exactly one client address, so a client cannot fake its way into a fresh
+budget — but behind your own proxy every client arrives as that proxy and
+shares one bucket, unless you trust the proxy's exact address in
+`gateway/Caddyfile` (`trusted_proxies static <address>/32`; the comment there
+explains it). Trust only that address, never `private_ranges`: trusting your
+LAN lets anyone on it choose the address they are limited by. Either way a
+per-client limit at your proxy, where the real address is known, stops a flood
+before it reaches the application.
 
 Two rules make it work:
 
@@ -549,6 +571,11 @@ key you are missing: every `<secret:...>` the config references must exist, or
 the backend refuses to start. For example, the `custom` sign-in provider
 references `auth_provider/custom/client_secret`, which can stay `""` while that
 provider is off.
+
+**Taking a newer `compose.yaml`?** Valkey now requires a password. Generate
+one (`openssl rand -hex 32`), set it as `VALKEY_PASSWORD` in `.env` and as
+`valkey/password` in `config/app.secrets.yaml`, then `docker compose up -d`.
+Until `VALKEY_PASSWORD` is set, compose refuses to start and names it.
 
 To roll back, set the previous tag and `up -d` again — but note that a
 migration applied by the newer version is *not* undone, and an older backend
