@@ -315,8 +315,8 @@ docker compose logs -f
 
 The order is enforced by health checks: Postgres and Valkey become healthy, the
 migration job runs to completion and exits, the backend starts and reports
-ready, then the frontend and the gateway start. First start takes a minute or
-two.
+ready, then the frontend starts and reports healthy, and only then the gateway
+starts. First start takes a minute or two.
 
 ### 8. Open it
 
@@ -775,13 +775,25 @@ Almost always an invalid auth variable. `MAINTMODE_AUTH_SECRET`,
 - **Missing or empty:** `docker compose up` refuses to start and names the
   variable, before any container is created.
 - **Present but invalid** — a secret shorter than 32 characters, a URL without
-  its scheme: Compose cannot tell, so the frontend container starts and
-  `docker compose ps` shows it running. The values are validated when the auth
-  module loads, on the first request, so every page answers HTTP 500,
-  `/login` included.
+  its scheme: Compose cannot tell, so the frontend container starts. The
+  values are validated when the auth module loads, on the first request, so
+  every page answers HTTP 500, `/login` included. The `ui` healthcheck
+  requests `/login` and fails on that 500: about 40 seconds after start
+  `docker compose ps` shows `ui` as `unhealthy`, and `docker compose up -d`
+  stops with `dependency failed to start: container …-ui-1 is unhealthy`.
+  On a first start that means the gateway never starts and nothing answers
+  on the published port; a gateway that was already running keeps serving
+  the 500s.
 
-The error appears in the frontend log once a page has been requested, and
-names the offending variable:
+An unhealthy `ui` means the frontend's own configuration, not a backend
+outage: the check does not depend on the backend. If the backend goes down
+after start-up, `/login` still renders its password form and `ui` stays
+healthy (see
+[The backend never becomes healthy](#the-backend-never-becomes-healthy) for
+that case).
+
+The error appears in the frontend log (the healthcheck's own requests put it
+there), and names the offending variable:
 
 ```bash
 docker compose logs ui

@@ -198,6 +198,27 @@ services:
     depends_on:
       maintmode:
         condition: service_healthy
+    # Without this, a present-but-invalid auth variable (a secret under 32
+    # characters, a URL without its scheme — the `:?` guards above only catch
+    # MISSING ones) left the container "running" while every page answered
+    # 500. /login is the probe because it loads the auth module, so an invalid
+    # value fails it, but it does NOT need the backend: an unreachable backend
+    # gives the break-glass sign-in form and a 200 within its 2-second
+    # provider timeout. So "unhealthy" here means the frontend's own config,
+    # never a backend outage — that one is the maintmode service's healthcheck.
+    #
+    # `node` because the image has no curl or wget. `redirect: manual`, so a
+    # redirect is not followed into some other page's 200.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/login',{redirect:'manual',signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.status===200?0:1),()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   # The single entry point: the frontend, plus the backend's two sign-in routes.
   # Configuration and the reasoning live in gateway/Caddyfile. The stock image
@@ -218,8 +239,12 @@ services:
     networks:
       - edge
       - app
+    # Healthy, not merely started: with a broken frontend `docker compose up`
+    # stops here and names the unhealthy container, instead of publishing a
+    # port that answers 500 to everything.
     depends_on:
-      - ui
+      ui:
+        condition: service_healthy
 
 networks:
   # Three networks, so that a compromised container reaches only what it
