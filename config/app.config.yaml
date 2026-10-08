@@ -18,7 +18,7 @@ app:
   # Where the backend sends a browser back at the end of Google sign-in. Must
   # match MAINTMODE_APP_BASE_URL in .env — a mismatch redirects users into
   # nowhere after an otherwise successful login.
-  frontend_url: http://localhost:9000
+  frontend_url: http://localhost:3000
   # The frontend page that finishes Google sign-in, appended to frontend_url.
   # Fixed by the frontend; do not change it.
   oauth_callback_path: /auth/oauth/callback
@@ -144,7 +144,7 @@ oauth_providers:
       # /auth/api/v1/login/oauth/google/callback. Must be registered in Google
       # byte for byte. A mismatch fails on Google's side with
       # redirect_uri_mismatch and never reaches the backend logs.
-      redirect_uri: "http://localhost:9000/auth/api/v1/login/oauth/google/callback"
+      redirect_uri: "http://localhost:3000/auth/api/v1/login/oauth/google/callback"
       client_secret: <secret:auth_provider/google/client_secret>
       # Optional: admit only Google Workspace accounts from these domains (the
       # `hd` claim). Empty or absent admits any Google account that has an
