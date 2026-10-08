@@ -766,20 +766,28 @@ in `.env`, `docker compose up -d` (see
 a few minutes to propagate. This error never shows up in MaintMode's logs:
 Google rejects the request on its side before your instance is involved.
 
-### The frontend container exits immediately
+### Every page returns 500
 
-Almost always a missing or invalid auth variable. `MAINTMODE_AUTH_SECRET`,
+Almost always an invalid auth variable. `MAINTMODE_AUTH_SECRET`,
 `MAINTMODE_APP_BASE_URL`, and `MAINTMODE_AUTH_PUBLIC_BASE_URL` (which
-`compose.yaml` derives from `MAINTMODE_APP_BASE_URL`) are validated when the
-auth module loads — before any page renders. If one is missing, nothing serves,
-including `/login`. You get a container that starts and dies rather than a site
-with a broken login page.
+`compose.yaml` derives from `MAINTMODE_APP_BASE_URL`) are checked in two places:
+
+- **Missing or empty:** `docker compose up` refuses to start and names the
+  variable, before any container is created.
+- **Present but invalid** — a secret shorter than 32 characters, a URL without
+  its scheme: Compose cannot tell, so the frontend container starts and
+  `docker compose ps` shows it running. The values are validated when the auth
+  module loads, on the first request, so every page answers HTTP 500,
+  `/login` included.
+
+The error appears in the frontend log once a page has been requested, and
+names the offending variable:
 
 ```bash
 docker compose logs ui
 ```
 
-The error names the offending variable. Check:
+Check:
 
 - Both are present in `.env` with no empty values
 - `MAINTMODE_AUTH_SECRET` is at least 32 characters
@@ -787,8 +795,7 @@ The error names the offending variable. Check:
 - No stray quotes around values — `.env` is not shell, so `KEY="value"` makes
   the quotes part of the value
 
-Compose validates these upfront, so a missing one usually surfaces as an error
-from `docker compose up` naming the variable, before anything starts.
+Fix `.env`, then `docker compose up -d`.
 
 ### Login fails after Google accepts you
 
