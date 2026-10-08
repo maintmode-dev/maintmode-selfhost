@@ -207,6 +207,13 @@ notify_transport:
   # restart. Declaring a transport an admin already configured takes it over
   # and wipes the credential stored in the database.
   use_stub: false
+  # Slack, Telegram and SMTP refuse loopback, private and other internal
+  # addresses by default: an admin types the Slack/Telegram API URL and the SMTP
+  # host, so without this guard those fields reach anything this server can
+  # reach. If your SMTP relay lives on your internal network (10.x, 192.168.x,
+  # a hostname resolving there), uncomment this. Needs a backend that knows the
+  # key — an older one refuses to start on it.
+  # allow_internal_hosts: true
 
 task_processor:
   messaging:
