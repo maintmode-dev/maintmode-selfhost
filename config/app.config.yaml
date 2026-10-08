@@ -211,8 +211,9 @@ notify_transport:
   # addresses by default: an admin types the Slack/Telegram API URL and the SMTP
   # host, so without this guard those fields reach anything this server can
   # reach. If your SMTP relay lives on your internal network (10.x, 192.168.x,
-  # a hostname resolving there), uncomment this. Needs a backend that knows the
-  # key — an older one refuses to start on it.
+  # a hostname resolving there), uncomment this and run
+  # `docker compose restart maintmode` (`up -d` does not reread this file).
+  # Needs a backend that knows the key — an older one refuses to start on it.
   # allow_internal_hosts: true
 
 task_processor:
