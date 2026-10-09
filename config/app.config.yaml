@@ -185,6 +185,9 @@ jwt:
   issuer_private_key: <secret:jwt/issuer_private_key>
   issuer_kid: <secret:jwt/issuer_kid>
   access_token_ttl: 15m
+  # Must be at least session_max_lifetime, or the backend refuses to start:
+  # expired refresh-token rows are deleted (task_processor.refresh_token_prune),
+  # and a shorter TTL would delete the rows of sessions still alive.
   refresh_token_ttl: 720h # 30 days
   # Signed out after this long without activity, and after this long from
   # sign-in whatever the activity.
@@ -221,8 +224,8 @@ task_processor:
     workers: 10
     max_attempts: 5
   # Cron fields are "minute hour day-of-month month day-of-week", evaluated in
-  # UTC whatever the host's time zone. Every cron_spec is required: an empty or
-  # malformed one fails startup.
+  # UTC whatever the host's time zone. Every cron_spec except
+  # refresh_token_prune's is required: an empty or malformed one fails startup.
   #
   # Cancels a maintenance that has not started `threshold` after its planned
   # start.
@@ -246,6 +249,19 @@ task_processor:
   # Deletes spent sign-in codes.
   otp_prune:
     cron_spec: "15 3 * * *"
+    retention: 24h
+    batch_limit: 1000
+  # Deletes refresh-token rows `retention` after they expire, daily at 03:30
+  # UTC. Optional: without this block the backend uses exactly these values,
+  # so a config written before v0.3.1 keeps booting. A malformed cron_spec
+  # still fails startup, and a negative retention or batch_limit is rejected.
+  #
+  # Until a row expires, reuse detection needs it to recognise a replayed
+  # token; the extra retention is a margin for looking into an incident. Each
+  # row records the IP address and browser of the request that created it —
+  # personal data — so rows are deleted rather than kept forever.
+  refresh_token_prune:
+    cron_spec: "30 3 * * *"
     retention: 24h
     batch_limit: 1000
 
