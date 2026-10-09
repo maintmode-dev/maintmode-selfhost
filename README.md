@@ -65,7 +65,10 @@ backend build expects.
   sign-in method this guide sets up for your users.
 - **An SMTP server** the backend can reach. The instance is invite-only and
   invitations go out by email; you enter the server in the admin UI after the
-  first login. The same transport enables sign-in by emailed code.
+  first login. The same transport enables sign-in by emailed code. A relay on
+  your internal network (a private address, or a name resolving to one) is
+  refused until you set `notify_transport.allow_internal_hosts: true` in
+  `config/app.config.yaml`.
 - **An HTTPS URL on a real domain**, if this is going to be used by anyone
   other than you. See [Behind a reverse proxy with TLS](#behind-a-reverse-proxy-with-tls)
   and [Does it have to be on the internet?](#does-it-have-to-be-on-the-internet)
@@ -312,8 +315,8 @@ docker compose logs -f
 
 The order is enforced by health checks: Postgres and Valkey become healthy, the
 migration job runs to completion and exits, the backend starts and reports
-ready, then the frontend and the gateway start. First start takes a minute or
-two.
+ready, then the frontend starts and reports healthy, and only then the gateway
+starts. First start takes a minute or two.
 
 ### 8. Open it
 
@@ -335,7 +338,10 @@ administrator is the **break-glass** account, which signs in with the
 2. Enter the break-glass password. You are now signed in as the break-glass
    administrator.
 3. In the admin UI, set up the email integration (your SMTP server).
-   Invitations are delivered only by email.
+   Invitations are delivered only by email. If the test email fails for a
+   relay on your internal network, see `allow_internal_hosts` in
+   `config/app.config.yaml`; after changing it, run
+   `docker compose restart maintmode`.
 4. Set up Slack or Telegram under **Administration → Integrations**, then
    create at least one notification channel under **Channels**. Every
    maintenance must notify at least one channel, so until one exists nobody can
@@ -355,7 +361,8 @@ Keep the break-glass password afterwards. It is the way back in when the usual
 sign-in methods are turned off or broken — a revoked Google client, say — and
 `/login/recovery` keeps working regardless. Anyone who has it is an
 administrator, so treat it like a root password; to retire break-glass
-entirely, set `bootstrap/password` to `""` and restart.
+entirely, set `bootstrap/password` to `""` and run
+`docker compose restart maintmode`.
 
 `allow_open_signup: false` in `config/app.config.yaml` is what keeps the
 instance invite-only. Setting it to `true` lets any Google account create an
@@ -378,8 +385,15 @@ Four things must agree, and the login flow breaks if any one of them drifts:
    `config/app.config.yaml` — the same string as 3
 
 Note the external form in 3 and 4: with the `/auth` prefix, as the browser sees
-it. Update all four together whenever the public URL changes, then
-`docker compose up -d` to apply.
+it. Update all four together whenever the public URL changes. The change spans
+`.env` and `config/app.config.yaml`, so apply it with both commands — `up -d`
+alone leaves the backend on the old URL (see
+[Applying configuration changes](#applying-configuration-changes)):
+
+```bash
+docker compose up -d
+docker compose restart maintmode
+```
 
 The proxy sends **everything** to the gateway on port 3000; the gateway decides
 what goes to the backend. Keep the gateway bound to `127.0.0.1` (the default)
@@ -537,6 +551,29 @@ and break-glass works anywhere.
 
 ---
 
+## Applying configuration changes
+
+Which command applies a change depends on which file you edited:
+
+| You changed | Run |
+| --- | --- |
+| `.env` | `docker compose up -d` |
+| `config/app.config.yaml` or `config/app.secrets.yaml` | `docker compose restart maintmode` |
+| Both | `docker compose up -d`, then `docker compose restart maintmode` |
+
+`up -d` recreates a container only when its image or its settings in
+`compose.yaml` change, and values from `.env` are part of those settings. The
+two files under `config/` are mounted into the backend container instead:
+Compose does not look inside them, so after editing either one `up -d`
+reports every container as running and the backend keeps the configuration it
+read at startup. `restart` makes it read both files again.
+
+`up -d` also leaves dependent containers alone. When a change in `.env`
+recreates Valkey, say, the backend is not restarted with it — which is why a
+change spanning both kinds of file needs both commands.
+
+---
+
 ## Updating
 
 ```bash
@@ -570,12 +607,15 @@ image contains exactly the schema that backend build expects.
 key you are missing: every `<secret:...>` the config references must exist, or
 the backend refuses to start. For example, the `custom` sign-in provider
 references `auth_provider/custom/client_secret`, which can stay `""` while that
-provider is off.
+provider is off. If the backend image did not change in the same update, run
+`docker compose restart maintmode` for the new config to take effect.
 
 **Taking a newer `compose.yaml`?** Valkey now requires a password. Generate
 one (`openssl rand -hex 32`), set it as `VALKEY_PASSWORD` in `.env` and as
-`valkey/password` in `config/app.secrets.yaml`, then `docker compose up -d`.
-Until `VALKEY_PASSWORD` is set, compose refuses to start and names it.
+`valkey/password` in `config/app.secrets.yaml`, then run both
+`docker compose up -d` and `docker compose restart maintmode`: `up -d`
+recreates Valkey with the new password but leaves a running backend on the old
+one. Until `VALKEY_PASSWORD` is set, compose refuses to start and names it.
 
 To roll back, set the previous tag and `up -d` again — but note that a
 migration applied by the newer version is *not* undone, and an older backend
@@ -633,6 +673,11 @@ Two things need backing up, and **a database dump alone is not enough**:
 
 Store them separately: a backup holding both an encrypted dump and the key that
 decrypts it offers little protection.
+
+A dump also holds personal data: client IP addresses, kept in refresh-token
+rows for at most `jwt.refresh_token_ttl` plus
+`task_processor.refresh_token_prune.retention` (31 days by default) and in the
+audit log for `task_processor.audit_prune.retention` (365 days by default).
 
 Valkey does not need backing up — it holds only rate-limit counters and
 short-lived locks, all of which regenerate.
@@ -719,24 +764,47 @@ Authorized redirect URIs**. Usual culprits:
 - `redirect_uri` in `config/app.config.yaml` differs from the registered one —
   it is the URI the backend actually sends
 
-After correcting either side, `docker compose up -d`. Google's changes can take
+After correcting `redirect_uri` in `config/app.config.yaml`, run
+`docker compose restart maintmode`; after correcting `MAINTMODE_APP_BASE_URL`
+in `.env`, `docker compose up -d` (see
+[Applying configuration changes](#applying-configuration-changes)). Google's changes can take
 a few minutes to propagate. This error never shows up in MaintMode's logs:
 Google rejects the request on its side before your instance is involved.
 
-### The frontend container exits immediately
+### Every page returns 500
 
-Almost always a missing or invalid auth variable. `MAINTMODE_AUTH_SECRET`,
+Almost always an invalid auth variable. `MAINTMODE_AUTH_SECRET`,
 `MAINTMODE_APP_BASE_URL`, and `MAINTMODE_AUTH_PUBLIC_BASE_URL` (which
-`compose.yaml` derives from `MAINTMODE_APP_BASE_URL`) are validated when the
-auth module loads — before any page renders. If one is missing, nothing serves,
-including `/login`. You get a container that starts and dies rather than a site
-with a broken login page.
+`compose.yaml` derives from `MAINTMODE_APP_BASE_URL`) are checked in two places:
+
+- **Missing or empty:** `docker compose up` refuses to start and names the
+  variable, before any container is created.
+- **Present but invalid** — a secret shorter than 32 characters, a URL without
+  its scheme: Compose cannot tell, so the frontend container starts. The
+  values are validated when the auth module loads, on the first request, so
+  every page answers HTTP 500, `/login` included. The `ui` healthcheck
+  requests `/login` and fails on that 500: about 40 seconds after start
+  `docker compose ps` shows `ui` as `unhealthy`, and `docker compose up -d`
+  stops with `dependency failed to start: container …-ui-1 is unhealthy`.
+  On a first start that means the gateway never starts and nothing answers
+  on the published port; a gateway that was already running keeps serving
+  the 500s.
+
+An unhealthy `ui` means the frontend's own configuration, not a backend
+outage: the check does not depend on the backend. If the backend goes down
+after start-up, `/login` still renders its password form and `ui` stays
+healthy (see
+[The backend never becomes healthy](#the-backend-never-becomes-healthy) for
+that case).
+
+The error appears in the frontend log (the healthcheck's own requests put it
+there), and names the offending variable:
 
 ```bash
 docker compose logs ui
 ```
 
-The error names the offending variable. Check:
+Check:
 
 - Both are present in `.env` with no empty values
 - `MAINTMODE_AUTH_SECRET` is at least 32 characters
@@ -744,8 +812,7 @@ The error names the offending variable. Check:
 - No stray quotes around values — `.env` is not shell, so `KEY="value"` makes
   the quotes part of the value
 
-Compose validates these upfront, so a missing one usually surfaces as an error
-from `docker compose up` naming the variable, before anything starts.
+Fix `.env`, then `docker compose up -d`.
 
 ### Login fails after Google accepts you
 
@@ -771,7 +838,8 @@ docker compose logs maintmode | grep -i oauth
   unchanged. (It also appears when the sign-in took longer than ten minutes;
   just try again.)
 
-Fix and `docker compose up -d`.
+All three fixes are in `config/`, so apply them with
+`docker compose restart maintmode`.
 
 ### Migrations did not run
 
@@ -820,9 +888,11 @@ MAINTMODE_HTTP_PORT=3001
 ```
 
 If you are **not** behind a reverse proxy, the port is part of your public URL,
-so also update `MAINTMODE_APP_BASE_URL`, `app.frontend_url` in
-`config/app.config.yaml`, and the redirect URI in Google Cloud Console. Behind
-a proxy, only the proxy's upstream needs changing.
+so also update `MAINTMODE_APP_BASE_URL`, `app.frontend_url` and
+`oauth_providers.providers.google.redirect_uri` in `config/app.config.yaml`,
+and the redirect URI in Google Cloud Console, then run `docker compose up -d`
+and `docker compose restart maintmode`. Behind a proxy, only the proxy's
+upstream needs changing.
 
 ### The backend never becomes healthy
 

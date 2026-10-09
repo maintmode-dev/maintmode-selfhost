@@ -18,7 +18,7 @@ app:
   # Where the backend sends a browser back at the end of Google sign-in. Must
   # match MAINTMODE_APP_BASE_URL in .env — a mismatch redirects users into
   # nowhere after an otherwise successful login.
-  frontend_url: http://localhost:9000
+  frontend_url: http://localhost:3000
   # The frontend page that finishes Google sign-in, appended to frontend_url.
   # Fixed by the frontend; do not change it.
   oauth_callback_path: /auth/oauth/callback
@@ -144,7 +144,7 @@ oauth_providers:
       # /auth/api/v1/login/oauth/google/callback. Must be registered in Google
       # byte for byte. A mismatch fails on Google's side with
       # redirect_uri_mismatch and never reaches the backend logs.
-      redirect_uri: "http://localhost:9000/auth/api/v1/login/oauth/google/callback"
+      redirect_uri: "http://localhost:3000/auth/api/v1/login/oauth/google/callback"
       client_secret: <secret:auth_provider/google/client_secret>
       # Optional: admit only Google Workspace accounts from these domains (the
       # `hd` claim). Empty or absent admits any Google account that has an
@@ -185,6 +185,9 @@ jwt:
   issuer_private_key: <secret:jwt/issuer_private_key>
   issuer_kid: <secret:jwt/issuer_kid>
   access_token_ttl: 15m
+  # Must be at least session_max_lifetime, or the backend refuses to start:
+  # expired refresh-token rows are deleted (task_processor.refresh_token_prune),
+  # and a shorter TTL would delete the rows of sessions still alive.
   refresh_token_ttl: 720h # 30 days
   # Signed out after this long without activity, and after this long from
   # sign-in whatever the activity.
@@ -207,14 +210,22 @@ notify_transport:
   # restart. Declaring a transport an admin already configured takes it over
   # and wipes the credential stored in the database.
   use_stub: false
+  # Slack, Telegram and SMTP refuse loopback, private and other internal
+  # addresses by default: an admin types the Slack/Telegram API URL and the SMTP
+  # host, so without this guard those fields reach anything this server can
+  # reach. If your SMTP relay lives on your internal network (10.x, 192.168.x,
+  # a hostname resolving there), uncomment this and run
+  # `docker compose restart maintmode` (`up -d` does not reread this file).
+  # Needs a backend that knows the key — an older one refuses to start on it.
+  # allow_internal_hosts: true
 
 task_processor:
   messaging:
     workers: 10
     max_attempts: 5
   # Cron fields are "minute hour day-of-month month day-of-week", evaluated in
-  # UTC whatever the host's time zone. Every cron_spec is required: an empty or
-  # malformed one fails startup.
+  # UTC whatever the host's time zone. Every cron_spec except
+  # refresh_token_prune's is required: an empty or malformed one fails startup.
   #
   # Cancels a maintenance that has not started `threshold` after its planned
   # start.
@@ -238,6 +249,19 @@ task_processor:
   # Deletes spent sign-in codes.
   otp_prune:
     cron_spec: "15 3 * * *"
+    retention: 24h
+    batch_limit: 1000
+  # Deletes refresh-token rows `retention` after they expire, daily at 03:30
+  # UTC. Optional: without this block the backend uses exactly these values,
+  # so a config written before v0.3.1 keeps booting. A malformed cron_spec
+  # still fails startup, and a negative retention or batch_limit is rejected.
+  #
+  # Until a row expires, reuse detection needs it to recognise a replayed
+  # token; the extra retention is a margin for looking into an incident. Each
+  # row records the IP address of the request that created it —
+  # personal data — so rows are deleted rather than kept forever.
+  refresh_token_prune:
+    cron_spec: "30 3 * * *"
     retention: 24h
     batch_limit: 1000
 
