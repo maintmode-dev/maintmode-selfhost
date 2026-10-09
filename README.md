@@ -674,6 +674,11 @@ Two things need backing up, and **a database dump alone is not enough**:
 Store them separately: a backup holding both an encrypted dump and the key that
 decrypts it offers little protection.
 
+A dump also holds personal data: client IP addresses, kept in refresh-token
+rows for at most `jwt.refresh_token_ttl` plus
+`task_processor.refresh_token_prune.retention` (31 days by default) and in the
+audit log for `task_processor.audit_prune.retention` (365 days by default).
+
 Valkey does not need backing up — it holds only rate-limit counters and
 short-lived locks, all of which regenerate.
 
