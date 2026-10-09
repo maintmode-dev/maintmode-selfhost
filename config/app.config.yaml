@@ -258,7 +258,7 @@ task_processor:
   #
   # Until a row expires, reuse detection needs it to recognise a replayed
   # token; the extra retention is a margin for looking into an incident. Each
-  # row records the IP address and browser of the request that created it —
+  # row records the IP address of the request that created it —
   # personal data — so rows are deleted rather than kept forever.
   refresh_token_prune:
     cron_spec: "30 3 * * *"
