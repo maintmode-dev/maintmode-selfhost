@@ -874,6 +874,10 @@ All three fixes are in `config/`, so apply them with
 
 ### Every sign-in fails, and the backend logs `invalid_client`
 
+Sign-ins fail as "invalid credentials", and users who are already signed in
+get an HTTP 503 once their session needs refreshing. Their sessions are kept
+and recover on their own once the values match.
+
 The frontend's credential does not match the backend's: compare
 `MAINTMODE_BACKEND_S2S_TOKEN` in `.env` with `s2s/maintmode-ui/secret` in
 `config/app.secrets.yaml` — they must be identical, and compose cannot check
