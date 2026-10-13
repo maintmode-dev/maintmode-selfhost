@@ -177,12 +177,16 @@ services:
       MAINTMODE_API_BASE_URL: http://maintmode:8000
       MAINTMODE_AUTH_API_BASE_URL: http://maintmode:8000
       MAINTMODE_API_TIMEOUT_MS: ${MAINTMODE_API_TIMEOUT_MS:-10000}
-      # These three are validated when the auth module loads — that is, before
-      # any route renders. Miss one and NOTHING serves, including /login. The
-      # `:?` guards turn that runtime crash into an upfront compose error that
-      # names the variable.
+      # These are validated when the auth module loads — that is, before any
+      # route renders. Miss one and NOTHING serves, including /login. The `:?`
+      # guards turn that runtime crash into an upfront compose error that names
+      # the variable.
       MAINTMODE_AUTH_SECRET: ${MAINTMODE_AUTH_SECRET:?MAINTMODE_AUTH_SECRET is required, min 32 chars — see .env.example}
       MAINTMODE_APP_BASE_URL: ${MAINTMODE_APP_BASE_URL:?MAINTMODE_APP_BASE_URL is required — the public URL users type}
+      # The frontend's credential on the backend's sign-in and token-refresh
+      # endpoints. Must equal s2s/maintmode-ui/secret in config/app.secrets.yaml:
+      # compose cannot check that, and a mismatch fails every sign-in.
+      MAINTMODE_BACKEND_S2S_TOKEN: ${MAINTMODE_BACKEND_S2S_TOKEN:?MAINTMODE_BACKEND_S2S_TOKEN is required, min 32 chars — see .env.example}
       # Where the BROWSER is sent to start Google sign-in: the public URL plus
       # the gateway's /auth prefix. Derived, so it cannot drift from the above.
       MAINTMODE_AUTH_PUBLIC_BASE_URL: ${MAINTMODE_APP_BASE_URL}/auth

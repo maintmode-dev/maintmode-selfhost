@@ -205,7 +205,7 @@ cp .env.example .env
 
 ### 3. Generate secrets
 
-Seven random values. Run each command and keep the output — you will paste them
+Eight random values. Run each command and keep the output — you will paste them
 in the next two steps.
 
 ```bash
@@ -216,6 +216,9 @@ openssl rand -hex 32
 openssl rand -hex 32
 
 # Frontend session secret (MAINTMODE_AUTH_SECRET)
+openssl rand -hex 32
+
+# Frontend credential (MAINTMODE_BACKEND_S2S_TOKEN and s2s/maintmode-ui/secret)
 openssl rand -hex 32
 
 # Backend token signing key (jwt/issuer_private_key)
@@ -231,7 +234,9 @@ openssl rand -hex 16
 openssl rand -base64 24
 ```
 
-Generate each one separately; do not reuse a single value across them.
+Generate each one separately; do not reuse a single value across them. The
+frontend credential, like the database and Valkey passwords, goes into both
+`.env` and `config/app.secrets.yaml`.
 
 A note on the signing key: it is a raw 32-byte P-256 scalar, hex-encoded, so
 `openssl rand -hex 32` is exactly right. Do **not** use
@@ -249,6 +254,7 @@ Open `.env` and set:
 | `POSTGRES_PASSWORD` | the database password you generated |
 | `VALKEY_PASSWORD` | the Valkey password you generated |
 | `MAINTMODE_AUTH_SECRET` | the session secret (min 32 chars) |
+| `MAINTMODE_BACKEND_S2S_TOKEN` | the frontend credential (min 32 chars) |
 | `MAINTMODE_APP_BASE_URL` | the URL users will type, no trailing slash |
 
 `MAINTMODE_APP_BASE_URL` must be the start of the redirect URI you registered
@@ -274,6 +280,7 @@ Open it and replace every `REPLACE_ME`:
 | `jwt/issuer_kid` | the 32-hex-char key ID |
 | `crypto/kek/selfhost-1` | the 64-hex-char encryption key |
 | `bootstrap/password` | the break-glass password (at least 20 characters) |
+| `s2s/maintmode-ui/secret` | the frontend credential — the same value as `MAINTMODE_BACKEND_S2S_TOKEN` |
 
 The database password appears in both files and **must** match exactly; a
 mismatch fails at startup with an authentication error.
@@ -621,6 +628,30 @@ To roll back, set the previous tag and `up -d` again — but note that a
 migration applied by the newer version is *not* undone, and an older backend
 may not tolerate a newer schema. Restoring from backup is the reliable path.
 
+### Upgrading to frontend client authentication
+
+From backend `vX.Y.Z` and frontend `vA.B.C` (<!-- TODO at release: fill in
+both tags -->), the backend accepts sign-in and token-refresh calls only from a
+frontend that presents its credential. The new backend refuses to start
+without the `s2s` section in `config/app.config.yaml`, and an older backend
+refuses to start *with* it — so the configuration and both images move in one
+step:
+
+1. Generate the credential (`openssl rand -hex 32`). Put it in `.env` as
+   `MAINTMODE_BACKEND_S2S_TOKEN` and in `config/app.secrets.yaml` as
+   `s2s/maintmode-ui/secret`.
+2. Take `compose.yaml` and the `s2s` section of `config/app.config.yaml` from
+   this repository.
+3. Set `MAINTMODE_VERSION` to `vX.Y.Z` and `MAINTMODE_UI_VERSION` to `vA.B.C`
+   (both at once), then `docker compose pull && docker compose up -d`.
+
+Compose starts the new backend first and the frontend once the backend is
+healthy; for the half-minute in between, sign-ins and session refreshes from
+the old frontend are refused. To roll back, set the previous
+`MAINTMODE_VERSION`, remove the `s2s` section from `config/app.config.yaml`,
+and `docker compose up -d`. Keep the frontend on the new tag: an older backend
+ignores its credential.
+
 ### Upgrading from v0.1.x
 
 v0.1.x let the frontend run Google sign-in; newer versions run it in the
@@ -840,6 +871,18 @@ docker compose logs maintmode | grep -i oauth
 
 All three fixes are in `config/`, so apply them with
 `docker compose restart maintmode`.
+
+### Every sign-in fails, and the backend logs `invalid_client`
+
+Sign-ins fail as "invalid credentials", and users who are already signed in
+get an HTTP 503 once their session needs refreshing. Their sessions are kept
+and recover on their own once the values match.
+
+The frontend's credential does not match the backend's: compare
+`MAINTMODE_BACKEND_S2S_TOKEN` in `.env` with `s2s/maintmode-ui/secret` in
+`config/app.secrets.yaml` — they must be identical, and compose cannot check
+that for you. After fixing either, run `docker compose up -d` (for `.env`) and
+`docker compose restart maintmode` (for the secrets file).
 
 ### Migrations did not run
 
