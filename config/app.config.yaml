@@ -288,3 +288,20 @@ crypto:
 # no way to create its first administrator. The key must exist either way.
 bootstrap:
   password: <secret:bootstrap/password>
+
+# The frontend authenticates itself on the endpoints that issue or redeem a
+# token pair: it sends X-S2S-APPNAME: maintmode-ui and its secret. The secret
+# lives in app.secrets.yaml under `s2s/maintmode-ui/secret` and must equal
+# MAINTMODE_BACKEND_S2S_TOKEN in .env. Keep the route list as shipped: a route
+# missing from it refuses the frontend with invalid_client.
+s2s:
+  maintmode-ui:
+    secret: <secret:s2s/maintmode-ui/secret>
+    available_api:
+      - /api/v1/refresh
+      - /api/v1/login/password
+      - /api/v1/login/break-glass
+      - /api/v1/login/otp/verify
+      - /api/v1/login/oauth/code/exchange
+      - /api/v1/login/oauth/exchange/google
+      - /api/v1/users/invitations/accept/password
