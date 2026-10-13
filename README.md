@@ -235,8 +235,8 @@ openssl rand -base64 24
 ```
 
 Generate each one separately; do not reuse a single value across them. The
-frontend credential is the one value you paste twice: into `.env` and into
-`config/app.secrets.yaml`.
+frontend credential, like the database and Valkey passwords, goes into both
+`.env` and `config/app.secrets.yaml`.
 
 A note on the signing key: it is a raw 32-byte P-256 scalar, hex-encoded, so
 `openssl rand -hex 32` is exactly right. Do **not** use
@@ -630,9 +630,9 @@ may not tolerate a newer schema. Restoring from backup is the reliable path.
 
 ### Upgrading to frontend client authentication
 
-From the release that introduces it (see the release notes; the backend and
-the frontend ship it in the same release), the backend accepts sign-in and token-refresh calls only
-from a frontend that presents its credential. The new backend refuses to start
+From backend `vX.Y.Z` and frontend `vA.B.C` (<!-- TODO at release: fill in
+both tags -->), the backend accepts sign-in and token-refresh calls only from a
+frontend that presents its credential. The new backend refuses to start
 without the `s2s` section in `config/app.config.yaml`, and an older backend
 refuses to start *with* it — so the configuration and both images move in one
 step:
@@ -642,13 +642,15 @@ step:
    `s2s/maintmode-ui/secret`.
 2. Take `compose.yaml` and the `s2s` section of `config/app.config.yaml` from
    this repository.
-3. Set `MAINTMODE_VERSION` and `MAINTMODE_UI_VERSION` to those releases (both
-   at once), then `docker compose pull && docker compose up -d`.
+3. Set `MAINTMODE_VERSION` to `vX.Y.Z` and `MAINTMODE_UI_VERSION` to `vA.B.C`
+   (both at once), then `docker compose pull && docker compose up -d`.
 
 Compose starts the new backend first and the frontend once the backend is
 healthy; for the half-minute in between, sign-ins and session refreshes from
-the old frontend are refused. To roll back, set both previous tags, remove the
-`s2s` section from `config/app.config.yaml`, and `docker compose up -d`.
+the old frontend are refused. To roll back, set the previous
+`MAINTMODE_VERSION`, remove the `s2s` section from `config/app.config.yaml`,
+and `docker compose up -d`. Keep the frontend on the new tag: an older backend
+ignores its credential.
 
 ### Upgrading from v0.1.x
 
