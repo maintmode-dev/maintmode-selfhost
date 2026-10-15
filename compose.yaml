@@ -103,7 +103,7 @@ services:
   # files inside itself. Keep its tag in lockstep with the maintmode tag below:
   # a backend newer than its schema fails in ways that are tedious to diagnose.
   migrations:
-    image: ghcr.io/maintmode-dev/maintmode-migrations:${MAINTMODE_VERSION:-main}
+    image: ghcr.io/maintmode-dev/maintmode-migrations:${MAINTMODE_VERSION:-latest}
     environment:
       GOOSE_DRIVER: postgres
       GOOSE_DBSTRING: postgres://maintmode:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/maintmode?sslmode=disable
@@ -120,7 +120,7 @@ services:
   # The Go backend. One binary serves both the auth routes and the application
   # API: 8000 is the public API, 8001 is the infra port (health, readiness).
   maintmode:
-    image: ghcr.io/maintmode-dev/maintmode:${MAINTMODE_VERSION:-main}
+    image: ghcr.io/maintmode-dev/maintmode:${MAINTMODE_VERSION:-latest}
     restart: unless-stopped
     environment:
       MAINTMODE_CONFIG_DIR: /app
@@ -169,7 +169,7 @@ services:
   # backend token, and never talks to the backend directly — except the two
   # sign-in routes, through the gateway.
   ui:
-    image: ghcr.io/maintmode-dev/maintmode-ui:${MAINTMODE_UI_VERSION:-main}
+    image: ghcr.io/maintmode-dev/maintmode-ui:${MAINTMODE_UI_VERSION:-latest}
     restart: unless-stopped
     environment:
       # Server-to-server. Both point at the same origin: without prefix
