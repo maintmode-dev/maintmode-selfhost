@@ -303,5 +303,4 @@ s2s:
       - /api/v1/login/break-glass
       - /api/v1/login/otp/verify
       - /api/v1/login/oauth/code/exchange
-      - /api/v1/login/oauth/exchange/google
       - /api/v1/users/invitations/accept/password

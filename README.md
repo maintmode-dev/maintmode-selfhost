@@ -630,20 +630,19 @@ may not tolerate a newer schema. Restoring from backup is the reliable path.
 
 ### Upgrading to frontend client authentication
 
-From backend `vX.Y.Z` and frontend `vA.B.C` (<!-- TODO at release: fill in
-both tags -->), the backend accepts sign-in and token-refresh calls only from a
-frontend that presents its credential. The new backend refuses to start
-without the `s2s` section in `config/app.config.yaml`, and an older backend
-refuses to start *with* it — so the configuration and both images move in one
-step:
+From backend `v0.4.0` and frontend `v0.4.0`, the backend accepts sign-in and
+token-refresh calls only from a frontend that presents its credential. The new
+backend refuses to start without the `s2s` section in `config/app.config.yaml`,
+and an older backend refuses to start *with* it — so the configuration and both
+images move in one step:
 
 1. Generate the credential (`openssl rand -hex 32`). Put it in `.env` as
    `MAINTMODE_BACKEND_S2S_TOKEN` and in `config/app.secrets.yaml` as
    `s2s/maintmode-ui/secret`.
 2. Take `compose.yaml` and the `s2s` section of `config/app.config.yaml` from
    this repository.
-3. Set `MAINTMODE_VERSION` to `vX.Y.Z` and `MAINTMODE_UI_VERSION` to `vA.B.C`
-   (both at once), then `docker compose pull && docker compose up -d`.
+3. Set `MAINTMODE_VERSION` to `v0.4.0` and `MAINTMODE_UI_VERSION` to `v0.4.0`
+   (or later; both at once), then `docker compose pull && docker compose up -d`.
 
 Compose starts the new backend first and the frontend once the backend is
 healthy; for the half-minute in between, sign-ins and session refreshes from
